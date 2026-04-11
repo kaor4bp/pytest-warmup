@@ -1,0 +1,63 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pytest-warmup"
+version = "0.1.0a0"
+description = "Batch preparation and distribution of expensive test resources for pytest."
+readme = "README.md"
+requires-python = ">=3.13"
+license = { file = "LICENSE" }
+authors = [
+  { name = "OpenAI Codex collaboration" },
+]
+dependencies = [
+  "pytest>=8.4",
+]
+keywords = [
+  "pytest",
+  "pytest-plugin",
+  "testing",
+  "fixtures",
+  "warmup",
+  "batch",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: Pytest",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Testing",
+]
+
+[project.urls]
+Homepage = "https://github.com/kaor4bp/pytest-warmup"
+Repository = "https://github.com/kaor4bp/pytest-warmup"
+Issues = "https://github.com/kaor4bp/pytest-warmup/issues"
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2",
+  "pytest>=8.4",
+  "twine>=6.1",
+]
+
+[project.entry-points.pytest11]
+pytest-warmup = "pytest_warmup.pytest_plugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pytest_warmup"]
+
+[dependency-groups]
+dev = [
+  "build>=1.2",
+  "pytest>=8.4",
+  "twine>=6.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

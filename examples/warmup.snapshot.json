@@ -1,0 +1,9 @@
+{
+  "shared": {
+    "profile_main": {
+      "profile_id": "debug-profile",
+      "workspace_id": "workspace-eu",
+      "profile_name": "main"
+    }
+  }
+}

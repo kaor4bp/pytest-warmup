@@ -1,0 +1,222 @@
+# pytest-warmup
+
+`pytest-warmup` is a pytest plugin for batch preparation and distribution of expensive test resources.
+
+Use it when ordinary fixture-by-fixture setup becomes too slow or too hard to reason about because objects are expensive to create, depend on one another, or require extra orchestration after creation.
+
+Typical cases:
+
+- creating external-domain objects in batches before a module or session runs;
+- waiting for synchronization, indexing, or propagation after creation;
+- reusing one prepared upstream object across multiple tests;
+- creating per-test instances only where the declaration explicitly asks for it;
+- replacing selected prepared values from a snapshot file for debugging.
+
+## Installation
+
+```bash
+pip install pytest-warmup
+```
+
+## Public API
+
+This package is intentionally narrow:
+
+- `WarmupPlan`
+- `WarmupRequirement`
+- `WarmupError`
+- `@warmup_param(...)`
+- `warmup_mgr.use(...).prepare(...)`
+
+## Quick Start
+
+Declare resource requirements in plan classes:
+
+```python
+from pytest_warmup import WarmupPlan, WarmupRequirement
+
+
+class ProfilePlan(WarmupPlan):
+    def require(
+        self,
+        *,
+        profile_name: str,
+        id: str | None = None,
+        is_per_test: bool | None = None,
+    ) -> WarmupRequirement:
+        return super().require(
+            payload={"profile_name": profile_name},
+            dependencies={},
+            id=id,
+            is_per_test=is_per_test,
+        )
+
+    def prepare(self, nodes, runtime) -> None:
+        for node in nodes:
+            runtime.set(
+                node,
+                {
+                    "profile_id": f"profile-{node.payload['profile_name']}",
+                    "profile_name": node.payload["profile_name"],
+                },
+            )
+```
+
+Build requirements from those plans:
+
+```python
+profile = ProfilePlan("profile")
+profile_main = profile.require(profile_name="main", id="profile_main")
+```
+
+Create one explicit producer fixture:
+
+```python
+import pytest
+
+
+@pytest.fixture(scope="module")
+def prepare_data(warmup_mgr):
+    return warmup_mgr.use(profile).prepare()
+```
+
+Inject the prepared resource into a test or fixture:
+
+```python
+from pytest_warmup import warmup_param
+
+
+@warmup_param("prepared_profile", profile_main)
+def test_profile(prepare_data, prepared_profile):
+    assert prepared_profile["profile_id"].startswith("profile-")
+```
+
+`is_per_test=True` on a requirement means that requirement is materialized separately for each collected test item. If omitted, the requirement inherits per-test behavior from upstream dependencies, otherwise it stays shared within the producer scope.
+
+For full runnable examples, see:
+
+- [`examples/basic_usage.py`](examples/basic_usage.py)
+- [`examples/autoresolve_usage.py`](examples/autoresolve_usage.py) for fixture-side autoresolve binding
+- [`examples/named_producer_usage.py`](examples/named_producer_usage.py)
+
+## Producer Patterns
+
+The default model stays explicit: a test or fixture depends on a producer fixture in the ordinary pytest dependency chain.
+
+Recommended order:
+
+1. use an explicit producer argument for the default, most readable path;
+2. use `warmup_autoresolve_producer` when you want less producer boilerplate but still keep one clearly defined producer seam;
+3. use `producer_fixture="..."` only to disambiguate between producers that are already present in the pytest dependency chain.
+
+Producer resolution rules:
+
+1. if `producer_fixture="..."` is provided, that fixture must already be part of the pytest dependency chain and is used as the producer;
+2. otherwise, if the dependency chain already contains exactly one prepared producer, that producer is used;
+3. otherwise, `warmup_autoresolve_producer` is used as a narrow fallback if it exists;
+4. otherwise, producer resolution fails fast.
+
+Producer convenience does not bypass normal pytest scope rules. A narrower producer is still invalid for a wider-scope consumer, and `warmup_autoresolve_producer` does not widen fixture visibility.
+
+Example of the fallback fixture:
+
+```python
+@pytest.fixture
+def warmup_autoresolve_producer(prepare_data):
+    return prepare_data
+
+
+@pytest.fixture
+@warmup_param("prepared_profile", profile_main)
+def prepared_profile_fixture(prepared_profile):
+    return prepared_profile
+```
+
+## Snapshot File Overrides
+
+Debug replacement is file-based through `prepare(snapshot_file=...)`.
+
+The current JSON shape is:
+
+```json
+{
+  "shared": {
+    "profile_main": {
+      "profile_id": "debug-profile"
+    }
+  },
+  "tests": {
+    "tests/test_module.py::test_case": {
+      "items_alpha": {
+        "items_id": "debug-items"
+      }
+    }
+  }
+}
+```
+
+Rules:
+
+- shared nodes are addressed by `id`;
+- per-test nodes are addressed by `tests[nodeid][id]`;
+- declarations that are effectively per-test may not be overridden through `shared`.
+
+## Troubleshooting
+
+Common producer-resolution errors usually mean one of these:
+
+- `no producer fixture found in pytest dependency chain ...`
+  The decorated test or fixture is not connected to any producer fixture, and no `warmup_autoresolve_producer` fallback exists.
+- `multiple producer fixtures found in pytest dependency chain`
+  The current dependency chain exposes more than one prepared producer. Simplify the chain or use `producer_fixture="..."` to pick one explicitly.
+- `producer fixture '...' is not in this dependency chain`
+  The named producer exists, but the current test or fixture does not depend on it through ordinary pytest wiring.
+- `producer fixture '...' must return a prepared warmup scope`
+  The selected fixture returned an ordinary value instead of the prepared scope returned by `warmup_mgr.use(...).prepare(...)`.
+- `... cannot be shared because dependency ... is per-test`
+  A shared declaration depends on a branch that is effectively per-test. Either inherit that branch or split the declaration differently.
+
+## Scope Boundary
+
+`pytest-warmup` is not trying to be:
+
+- a general-purpose factory framework;
+- a generic snapshot assertion library;
+- a container or infrastructure manager;
+- a hidden autouse preparation layer;
+- a domain-specific toolkit.
+
+It focuses on one problem: batch creation and targeted distribution of expensive test resources.
+
+Further design details live in:
+
+- [`docs/design.md`](docs/design.md)
+- [`docs/publishing.md`](docs/publishing.md)
+- [`examples/README.md`](examples/README.md)
+- [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- [`CHANGELOG.md`](CHANGELOG.md)
+
+## Development
+
+```bash
+uv venv .venv
+uv pip install --python .venv/bin/python -e ".[dev]"
+./.venv/bin/python -m pytest -q
+./.venv/bin/python -m build
+```
+
+Before publishing, also do one smoke check from the built wheel in a fresh virtual environment.
+
+## Attribution
+
+The initial code, tests, and documentation in this repository were generated and iteratively refined with ChatGPT/Codex plus collaborating agents.
+
+Named collaborating agents from the design and spike process:
+
+- Lovelace is an adversarial, QA-minded reviewer focused on user-facing clarity. She pushed the ergonomics tests, debug/override edge cases, and the API critiques that kept the package honest from a user perspective.
+- Herschel is a graph-minded, skeptical contributor who prefers explicit execution boundaries over hidden magic. He drove the selected-roots to reachable-subgraph execution model and kept edge-case behavior small and defensible.
+- Chandrasekhar is a no-magic, contract-first contributor focused on clear binding and injection rules. He helped shape the public injection model and the readable fail-fast behavior around overrides and producer discovery.
+- Pauli is a direct, readability-first contributor who focused on the debug surface and shared-vs-per-test semantics. He helped keep snapshot addressing and distributed-declaration behavior explicit and testable.
+- Kuhn is a pragmatic builder who prefers simple, reviewable orchestration over framework cleverness. He contributed to the manager/runtime seams and the explicit lifecycle shape used by the public prototype.
+
+All generated material still requires human review. The repository treats generated output as draft engineering work, not as an authority.

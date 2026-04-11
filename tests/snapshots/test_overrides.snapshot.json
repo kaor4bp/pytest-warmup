@@ -1,0 +1,26 @@
+{
+  "shared": {
+    "program_main": {
+      "program_id": "debug-program-1",
+      "program_profile": "MAIN"
+    }
+  },
+  "tests": {
+    "tests/test_overrides.py::test_alpha_override": {
+      "products_alpha": {
+        "batch_id": "debug-alpha",
+        "program_id": "debug-program-1",
+        "qty": 10,
+        "upc": "123"
+      }
+    },
+    "tests/test_overrides.py::test_inherited_per_test_override_stays_local[one]": {
+      "products_gamma": {
+        "batch_id": "debug-gamma-one",
+        "program_id": "program-debug-one",
+        "qty": 30,
+        "upc": "789"
+      }
+    }
+  }
+}
