@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.1
+
 - Initial public alpha extraction from the prototype workspace.
 - Explicit `WarmupPlan.require(...)` declaration model.
 - `@warmup_param(...)` injection for fixtures and test functions.
