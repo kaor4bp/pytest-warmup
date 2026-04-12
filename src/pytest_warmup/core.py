@@ -657,7 +657,26 @@ def _selected_items_for_scope(
         current_class = request.node.cls
         return [item for item in items if item.cls is current_class]
 
+    if scope == "package":
+        package_path = getattr(request.node, "path", None)
+        if package_path is None:
+            raise WarmupError("package-scoped producer is missing package path information")
+        package_path = Path(str(package_path))
+        return [
+            item
+            for item in items
+            if _path_is_within(Path(str(item.path)), package_path)
+        ]
+
     raise WarmupError(f"unsupported producer scope {scope!r}")
+
+
+def _path_is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
 
 
 def _collect_selected_roots(
@@ -1100,19 +1119,33 @@ def _empty_snapshot_fragment() -> SnapshotFragment:
 
 
 def _producer_scope_id(request: pytest.FixtureRequest) -> str:
-    anchor = request.node.nodeid
-    if not anchor:
-        fixturedef = getattr(request, "_fixturedef", None)
-        anchor = getattr(fixturedef, "baseid", "") or ""
+    anchor = _request_scope_anchor(request)
     if anchor:
         return f"{request.scope}:{anchor}::{request.fixturename}"
     return f"{request.scope}::{request.fixturename}"
 
 
 def _producer_fixture_identity(request: pytest.FixtureRequest) -> str:
+    anchor = _request_scope_anchor(request) or request.scope
+    return f"{anchor}::{request.fixturename}"
+
+
+def _request_scope_anchor(request: pytest.FixtureRequest) -> str:
+    anchor = request.node.nodeid
+    if anchor:
+        return anchor
     fixturedef = getattr(request, "_fixturedef", None)
-    baseid = getattr(fixturedef, "baseid", "") or request.node.nodeid or request.scope
-    return f"{baseid}::{request.fixturename}"
+    baseid = getattr(fixturedef, "baseid", "") or ""
+    if baseid:
+        return baseid
+    node_path = getattr(request.node, "path", None)
+    if node_path is not None:
+        path = Path(str(node_path))
+        try:
+            return path.relative_to(Path(str(request.config.rootpath))).as_posix()
+        except ValueError:
+            return path.as_posix()
+    return ""
 
 
 def _resolve_snapshot_fragment(

@@ -15,6 +15,8 @@ Producer resolution rules:
 
 This keeps the default explicit while still allowing two controlled convenience paths.
 
+Supported producer scopes are `session`, `package`, `module`, `class`, and `function`.
+
 ## What the Package Owns
 
 - declaration of resource requirements through `WarmupPlan.require(...)`;

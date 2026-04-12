@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added package-scoped producer support, including stable package `scope_id` generation for snapshot and debug artifacts.
 - Added multi-binding support for stacking multiple `@warmup_param(...)` decorators on one callable.
 - Added pytest CLI options:
   - `--warmup-snapshot`

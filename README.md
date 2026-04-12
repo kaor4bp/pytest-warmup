@@ -70,7 +70,8 @@ profile = ProfilePlan("profile")
 profile_main = profile.require(profile_name="main", id="profile_main")
 ```
 
-Create one explicit producer fixture:
+Create one explicit producer fixture. Producer fixtures may use pytest's
+`session`, `package`, `module`, `class`, or `function` scopes:
 
 ```python
 import pytest
