@@ -1,9 +1,13 @@
 {
+  "version": 1,
   "shared": {
     "profile_main": {
-      "profile_id": "debug-profile",
-      "workspace_id": "workspace-eu",
-      "profile_name": "main"
+      "value": {
+        "profile_id": "debug-profile",
+        "workspace_id": "workspace-eu",
+        "profile_name": "main"
+      }
     }
-  }
+  },
+  "tests": {}
 }

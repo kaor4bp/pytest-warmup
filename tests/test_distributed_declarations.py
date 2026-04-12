@@ -115,7 +115,11 @@ def test_redeclared_same_id_across_files_fails_fast(pytester: pytest.Pytester) -
     )
     result = pytester.runpytest("-q")
     assert result.ret != 0
-    result.stdout.fnmatch_lines(["*duplicate id 'products_alpha' within one producer scope*"])
+    result.stdout.fnmatch_lines(
+        [
+            "*duplicate id 'products_alpha' within one producer scope; if this should be the same resource, import and reuse the same WarmupRequirement object instead of redeclaring it*",
+        ]
+    )
 
 
 def test_redeclared_same_id_with_different_dependency_shape_across_files_fails_fast(
@@ -170,7 +174,11 @@ def test_redeclared_same_id_with_different_dependency_shape_across_files_fails_f
     )
     result = pytester.runpytest("-q")
     assert result.ret != 0
-    result.stdout.fnmatch_lines(["*duplicate id 'products_alpha' within one producer scope*"])
+    result.stdout.fnmatch_lines(
+        [
+            "*duplicate id 'products_alpha' within one producer scope; if this should be the same resource, import and reuse the same WarmupRequirement object instead of redeclaring it*",
+        ]
+    )
 
 
 def test_different_ids_with_same_shape_across_files_stay_distinct_nodes(
@@ -270,7 +278,11 @@ def test_same_id_across_different_plans_in_one_producer_scope_fails_fast(
     )
     result = pytester.runpytest("-q")
     assert result.ret != 0
-    result.stdout.fnmatch_lines(["*duplicate id 'shared_id' within one producer scope*"])
+    result.stdout.fnmatch_lines(
+        [
+            "*duplicate id 'shared_id' within one producer scope; if this should be the same resource, import and reuse the same WarmupRequirement object instead of redeclaring it*",
+        ]
+    )
 
 
 def test_same_id_in_different_producer_scopes_is_allowed(

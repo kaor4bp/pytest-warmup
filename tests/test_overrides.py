@@ -47,9 +47,11 @@ products_gamma = inventory.require(
 
 
 @pytest.fixture(scope="module")
-def prepare_data(warmup_mgr):
+def prepare_data(warmup_mgr, pytestconfig):
     snapshot_file = Path(__file__).with_name("snapshots").joinpath("test_overrides.snapshot.json")
-    return warmup_mgr.use(facility, program, inventory).prepare(snapshot_file=snapshot_file)
+    pytestconfig.option.warmup_snapshot = None
+    pytestconfig.option.warmup_snapshot_for = [f"test-overrides={snapshot_file}"]
+    return warmup_mgr.use(facility, program, inventory).prepare(snapshot_id="test-overrides")
 
 
 @pytest.fixture

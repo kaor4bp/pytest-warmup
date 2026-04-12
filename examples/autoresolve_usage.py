@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from pytest_warmup import WarmupPlan, WarmupRequirement, warmup_param
@@ -113,8 +111,7 @@ items_alpha = items.require(
 
 @pytest.fixture(scope="module")
 def prepare_data(warmup_mgr):
-    snapshot_file = Path(__file__).with_name("warmup.snapshot.json")
-    return warmup_mgr.use(workspace, profile, items).prepare(snapshot_file=snapshot_file)
+    return warmup_mgr.use(workspace, profile, items).prepare(snapshot_id="autoresolve-usage")
 
 
 @pytest.fixture

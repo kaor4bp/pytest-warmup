@@ -7,13 +7,17 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from inspect import Parameter, Signature, isgeneratorfunction, signature
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from time import perf_counter
+from typing import Callable, Iterable, Mapping
 import functools
 import json
 
 import pytest
 
 WARMUP_BINDING_ATTR = "__warmup_binding__"
+WARMUP_BINDINGS_ATTR = "__warmup_bindings__"
+WARMUP_BASE_CALLABLE_ATTR = "__warmup_base_callable__"
+WARMUP_BASE_SIGNATURE_ATTR = "__warmup_base_signature__"
 AUTORESOLVE_PRODUCER_FIXTURE = "warmup_autoresolve_producer"
 CURRENT_FIXTURE_REQUEST: ContextVar[pytest.FixtureRequest | None] = ContextVar(
     "warmup_current_fixture_request",
@@ -112,6 +116,34 @@ class WarmupPlan:
         """
         raise NotImplementedError
 
+    def validate_snapshot_value(
+        self,
+        requirement: WarmupRequirement,
+        raw: object,
+    ) -> None:
+        """Validate one JSON snapshot value before it is used as an override."""
+        del requirement
+        _require_json_serializable(raw, context="snapshot value")
+
+    def deserialize_snapshot_value(
+        self,
+        requirement: WarmupRequirement,
+        raw: object,
+    ) -> object:
+        """Convert one JSON snapshot value into the runtime value used by tests."""
+        self.validate_snapshot_value(requirement, raw)
+        return raw
+
+    def serialize_snapshot_value(
+        self,
+        requirement: WarmupRequirement,
+        value: object,
+    ) -> object:
+        """Convert one prepared runtime value into a JSON-safe snapshot payload."""
+        del requirement
+        _require_json_serializable(value, context="prepared runtime value")
+        return value
+
 
 @dataclass(frozen=True)
 class WarmupBinding:
@@ -188,6 +220,7 @@ class RuntimeContext:
     producer_scope: str
     selected_test_ids: tuple[str, ...]
     trace: list[str] = field(default_factory=list)
+    batch_reports: list[dict[str, object]] = field(default_factory=list)
     _store: ProducedValueStore | None = field(default=None, init=False, repr=False)
     _active_batch: dict[str, PlanNode] = field(default_factory=dict, init=False, repr=False)
 
@@ -268,72 +301,80 @@ def warmup_param(
     )
 
     def decorator(func: Callable[..., object]) -> Callable[..., object]:
-        if hasattr(func, WARMUP_BINDING_ATTR):
-            raise WarmupError("only one warmup_param binding is supported per decorated callable")
+        callable_name = getattr(func, "__name__", repr(func))
+        base_callable = getattr(func, WARMUP_BASE_CALLABLE_ATTR, func)
+        base_signature = getattr(func, WARMUP_BASE_SIGNATURE_ATTR, signature(base_callable))
+        existing_bindings = _warmup_bindings_for_callable(func)
+        bindings = _normalize_bindings(
+            existing_bindings=existing_bindings,
+            new_binding=binding,
+            callable_name=callable_name,
+            base_signature=base_signature,
+        )
+        resolved_producer_fixture = _select_binding_producer_fixture(bindings, callable_name)
+        visible_signature = _build_visible_signature(base_signature, bindings)
+        base_callable_expects_request = "request" in base_signature.parameters
 
-        original_signature = signature(func)
-        if argument_name not in original_signature.parameters:
-            raise WarmupError(
-                f"warmup_param argument {argument_name!r} is missing from callable {func.__name__!r}"
-            )
-
-        visible_parameters = [
-            parameter
-            for name, parameter in original_signature.parameters.items()
-            if name != argument_name
-        ]
-        if "request" not in original_signature.parameters:
-            visible_parameters.append(
-                Parameter(
-                    "request",
-                    kind=Parameter.KEYWORD_ONLY,
+        def _inject_bound_arguments(
+            *,
+            request: pytest.FixtureRequest,
+            provided_values: Iterable[object],
+        ) -> dict[str, object]:
+            for current_binding in bindings:
+                _validate_no_fixture_name_collision(
+                    request=request,
+                    argument_name=current_binding.argument_name,
                 )
+            prepared_scope = _locate_prepared_scope(
+                request,
+                provided_values,
+                producer_fixture=resolved_producer_fixture,
             )
-        visible_signature = Signature(parameters=visible_parameters)
+            return {
+                current_binding.argument_name: prepared_scope.value_for(
+                    test_id=request.node.nodeid,
+                    requirement=current_binding.requirement,
+                )
+                for current_binding in bindings
+            }
 
-        if isgeneratorfunction(func):
+        if isgeneratorfunction(base_callable):
 
             @functools.wraps(func)
             def wrapped(*args: object, **kwargs: object) -> object:
                 request = kwargs.pop("request")
-                _validate_no_fixture_name_collision(
-                    request=request,
-                    argument_name=argument_name,
+                kwargs.update(
+                    _inject_bound_arguments(
+                        request=request,
+                        provided_values=kwargs.values(),
+                    )
                 )
-                prepared_scope = _locate_prepared_scope(
-                    request,
-                    kwargs.values(),
-                    producer_fixture=producer_fixture,
-                )
-                injected = prepared_scope.value_for(
-                    test_id=request.node.nodeid,
-                    requirement=requirement,
-                )
-                kwargs[argument_name] = injected
-                yield from func(*args, **kwargs)
+                if base_callable_expects_request:
+                    kwargs["request"] = request
+                yield from base_callable(*args, **kwargs)
 
         else:
 
             @functools.wraps(func)
             def wrapped(*args: object, **kwargs: object) -> object:
                 request = kwargs.pop("request")
-                _validate_no_fixture_name_collision(
-                    request=request,
-                    argument_name=argument_name,
+                kwargs.update(
+                    _inject_bound_arguments(
+                        request=request,
+                        provided_values=kwargs.values(),
+                    )
                 )
-                prepared_scope = _locate_prepared_scope(
-                    request,
-                    kwargs.values(),
-                    producer_fixture=producer_fixture,
-                )
-                injected = prepared_scope.value_for(
-                    test_id=request.node.nodeid,
-                    requirement=requirement,
-                )
-                kwargs[argument_name] = injected
-                return func(*args, **kwargs)
+                if base_callable_expects_request:
+                    kwargs["request"] = request
+                return base_callable(*args, **kwargs)
 
-        setattr(wrapped, WARMUP_BINDING_ATTR, binding)
+        setattr(wrapped, WARMUP_BINDINGS_ATTR, bindings)
+        setattr(wrapped, WARMUP_BASE_CALLABLE_ATTR, base_callable)
+        setattr(wrapped, WARMUP_BASE_SIGNATURE_ATTR, base_signature)
+        if len(bindings) == 1:
+            setattr(wrapped, WARMUP_BINDING_ATTR, bindings[0])
+        elif hasattr(wrapped, WARMUP_BINDING_ATTR):
+            delattr(wrapped, WARMUP_BINDING_ATTR)
         wrapped.__signature__ = visible_signature
         return wrapped
 
@@ -439,6 +480,21 @@ def _resolve_named_producer_fixture(
 @dataclass
 class WarmupSessionState:
     items: list[pytest.Item] = field(default_factory=list)
+    snapshot_inputs: "SessionSnapshotInputs | None" = None
+    snapshot_signature: tuple[Path | None, tuple[str, ...]] | None = None
+    snapshot_id_owners: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SnapshotFragment:
+    shared: Mapping[str, Mapping[str, object]]
+    tests: Mapping[str, Mapping[str, Mapping[str, object]]]
+
+
+@dataclass(frozen=True)
+class SessionSnapshotInputs:
+    scoped_fragments: Mapping[str, SnapshotFragment]
+    targeted_fragments: Mapping[str, SnapshotFragment]
 
 
 class WarmupManager:
@@ -468,9 +524,10 @@ class WarmupPreparationBuilder:
         self._state = state
         self._plans = plans
 
-    def prepare(self, *, snapshot_file: str | Path | None = None) -> PreparedScope:
+    def prepare(self, *, snapshot_id: str | None = None) -> PreparedScope:
         """Prepare the selected warmup graph for the current producer scope."""
         __tracebackhide__ = True
+        options = _resolve_prepare_options(self._request.config)
         selected_items = _selected_items_for_scope(self._request, self._state.items)
         selected_roots = _collect_selected_roots(selected_items, set(self._plans))
         normalized_nodes = _normalize_requirements(selected_roots)
@@ -481,21 +538,101 @@ class WarmupPreparationBuilder:
             selected_roots,
             effective_per_test,
         )
-        overrides = _load_overrides(snapshot_file)
-        _validate_overrides(normalized_nodes, runtime_instances, overrides, selected_items)
-
         runtime = RuntimeContext(
             producer_scope=self._request.scope,
             selected_test_ids=tuple(item.nodeid for item in selected_items),
         )
         store = ProducedValueStore()
-        _materialize(
-            runtime_instances=runtime_instances,
-            normalized_nodes=normalized_nodes,
-            store=store,
-            runtime=runtime,
-            overrides=overrides,
+        scope_id = _producer_scope_id(self._request)
+        if options.export_template_file is not None:
+            _merge_scoped_document_file(
+                options.export_template_file,
+                scope_id=scope_id,
+                fragment=_build_snapshot_fragment_template(runtime_instances),
+            )
+
+        fragment = _resolve_snapshot_fragment(
+            request=self._request,
+            state=self._state,
+            snapshot_id=snapshot_id,
         )
+        applicable_fragment = _filter_snapshot_fragment(
+            normalized_nodes=normalized_nodes,
+            fragment=fragment,
+            selected_items=selected_items,
+        )
+        raw_overrides: dict[str, dict[str, object]] = {"shared": {}, "tests": {}}
+        status = "prepared"
+        error: BaseException | None = None
+        try:
+            _validate_snapshot_fragment(
+                normalized_nodes,
+                runtime_instances,
+                applicable_fragment,
+                selected_items,
+            )
+            raw_overrides = _extract_overrides(applicable_fragment)
+            overrides = _deserialize_overrides(normalized_nodes, raw_overrides)
+            _materialize(
+                runtime_instances=runtime_instances,
+                normalized_nodes=normalized_nodes,
+                store=store,
+                runtime=runtime,
+                overrides=overrides,
+            )
+        except BaseException as exc:
+            status = "failed"
+            error = exc
+            if options.save_on_fail_file is not None:
+                save_on_fail_payload = _safe_build_saved_snapshot(
+                    scope_id=scope_id,
+                    normalized_nodes=normalized_nodes,
+                    runtime_instances=runtime_instances,
+                    store=store,
+                    runtime=runtime,
+                    error=exc,
+                )
+                _best_effort_merge_scoped_document_file(
+                    options.save_on_fail_file,
+                    scope_id=scope_id,
+                    fragment=save_on_fail_payload["scopes"][scope_id],
+                )
+            if options.report_file is not None:
+                report_payload = _safe_build_failure_report(
+                    scope_id=scope_id,
+                    runtime=runtime,
+                    selected_roots=selected_roots,
+                    normalized_nodes=normalized_nodes,
+                    runtime_instances=runtime_instances,
+                    effective_per_test=effective_per_test,
+                    raw_overrides=raw_overrides,
+                    store=store,
+                    error=exc,
+                )
+                _best_effort_merge_scoped_document_file(
+                    options.report_file,
+                    scope_id=scope_id,
+                fragment=report_payload,
+                )
+            raise
+
+        if options.report_file is not None:
+            _merge_scoped_document_file(
+                options.report_file,
+                scope_id=scope_id,
+                fragment=_build_preparation_report(
+                    scope_id=scope_id,
+                    runtime=runtime,
+                    selected_roots=selected_roots,
+                    normalized_nodes=normalized_nodes,
+                    runtime_instances=runtime_instances,
+                    effective_per_test=effective_per_test,
+                    raw_overrides=raw_overrides,
+                    store=store,
+                    status=status,
+                    error=error,
+                ),
+            )
         return PreparedScope(runtime=runtime, store=store)
 
 
@@ -529,8 +666,9 @@ def _collect_selected_roots(
 ) -> list[SelectedRoot]:
     collected: list[SelectedRoot] = []
     for item in items:
-        test_binding = getattr(item.obj, WARMUP_BINDING_ATTR, None)
-        if test_binding and test_binding.requirement.owner_plan in allowed_plans:
+        for test_binding in _warmup_bindings_for_callable(item.obj):
+            if test_binding.requirement.owner_plan not in allowed_plans:
+                continue
             collected.append(
                 SelectedRoot(
                     consumer_id=item.nodeid,
@@ -549,19 +687,17 @@ def _collect_selected_roots(
             func = getattr(fixturedef, "func", None) or getattr(
                 fixturedef, "_fixturefunc", None
             )
-            fixture_binding = getattr(func, WARMUP_BINDING_ATTR, None)
-            if fixture_binding is None:
-                continue
-            if fixture_binding.requirement.owner_plan not in allowed_plans:
-                continue
-            collected.append(
-                SelectedRoot(
-                    consumer_id=item.nodeid,
-                    source_kind="fixture",
-                    source_name=fixture_name,
-                    binding=fixture_binding,
+            for fixture_binding in _warmup_bindings_for_callable(func):
+                if fixture_binding.requirement.owner_plan not in allowed_plans:
+                    continue
+                collected.append(
+                    SelectedRoot(
+                        consumer_id=item.nodeid,
+                        source_kind="fixture",
+                        source_name=fixture_name,
+                        binding=fixture_binding,
+                    )
                 )
-            )
     return collected
 
 
@@ -657,7 +793,9 @@ def _validate_ids(normalized_nodes: tuple[NormalizedNode, ...]) -> None:
             continue
         if existing is not node.requirement:
             raise WarmupError(
-                f"duplicate id {node.public_id!r} within one producer scope"
+                f"duplicate id {node.public_id!r} within one producer scope; "
+                "if this should be the same resource, import and reuse the same "
+                "WarmupRequirement object instead of redeclaring it"
             )
 
 
@@ -782,48 +920,275 @@ def _dependency_runtime_key(
     raise WarmupError(f"missing dependency runtime key for {dependency!r}")
 
 
-def _load_overrides(snapshot_file: str | Path | None) -> dict[str, dict[str, object]]:
+def _session_snapshot_inputs(
+    config: pytest.Config,
+    state: WarmupSessionState,
+) -> SessionSnapshotInputs:
     __tracebackhide__ = True
-    if snapshot_file is None:
-        return {"shared": {}, "tests": {}}
-    snapshot_path = Path(snapshot_file)
-    if not snapshot_path.exists():
-        raise WarmupError(f"snapshot file does not exist: {str(snapshot_path)!r}")
-    try:
-        raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+    signature = _snapshot_signature(config)
+    if state.snapshot_inputs is not None and state.snapshot_signature == signature:
+        return state.snapshot_inputs
+    scoped_path, targeted_specs = signature
+    scoped_fragments: dict[str, SnapshotFragment] = {}
+    if scoped_path is not None:
+        scoped_fragments = _load_scoped_snapshot_bundle(scoped_path)
+    targeted_fragments = _load_targeted_snapshot_fragments(targeted_specs)
+    state.snapshot_inputs = SessionSnapshotInputs(
+        scoped_fragments=scoped_fragments,
+        targeted_fragments=targeted_fragments,
+    )
+    state.snapshot_signature = signature
+    state.snapshot_id_owners.clear()
+    return state.snapshot_inputs
+
+
+def _snapshot_signature(config: pytest.Config) -> tuple[Path | None, tuple[str, ...]]:
+    return (
+        _optional_path(config.getoption("warmup_snapshot")),
+        tuple(config.getoption("warmup_snapshot_for") or ()),
+    )
+
+
+def _load_scoped_snapshot_bundle(path: Path) -> dict[str, SnapshotFragment]:
+    raw = _load_json_object(path, context="snapshot file")
+    version = raw.get("version")
+    if version != 1:
+        raise WarmupError("snapshot file field 'version' must be 1")
+    allowed_keys = {"version", "scopes"}
+    unexpected_keys = sorted(set(raw) - allowed_keys)
+    if unexpected_keys:
         raise WarmupError(
-            f"snapshot file {str(snapshot_path)!r} is not valid JSON"
-        ) from exc
-    if not isinstance(raw, Mapping):
-        raise WarmupError("snapshot file content must be a JSON object")
-    return _normalize_overrides_mapping(raw)
+            f"snapshot file contains unexpected top-level fields: {unexpected_keys!r}"
+        )
+    scopes = raw.get("scopes", {})
+    if not isinstance(scopes, Mapping):
+        raise WarmupError("snapshot file field 'scopes' must be a mapping")
+    normalized: dict[str, SnapshotFragment] = {}
+    for scope_id, value in scopes.items():
+        normalized_scope_id = str(scope_id)
+        if normalized_scope_id in normalized:
+            raise WarmupError(f"duplicate snapshot scope id {normalized_scope_id!r}")
+        normalized[normalized_scope_id] = _normalize_snapshot_fragment_mapping(
+            value,
+            context=f"snapshot scope {normalized_scope_id!r}",
+        )
+    return normalized
 
 
-def _normalize_overrides_mapping(overrides: Mapping[str, object]) -> dict[str, dict[str, object]]:
+def _load_targeted_snapshot_fragments(
+    specs: tuple[str, ...],
+) -> dict[str, SnapshotFragment]:
+    normalized: dict[str, SnapshotFragment] = {}
+    for spec in specs:
+        snapshot_id, path = _parse_snapshot_target_spec(spec)
+        if snapshot_id in normalized:
+            raise WarmupError(f"duplicate CLI snapshot target for snapshot_id {snapshot_id!r}")
+        raw = _load_json_object(path, context=f"targeted snapshot file for {snapshot_id!r}")
+        version = raw.get("version")
+        if version != 1:
+            raise WarmupError(
+                f"targeted snapshot file for {snapshot_id!r} must set 'version' to 1"
+            )
+        allowed_keys = {"version", "shared", "tests"}
+        unexpected_keys = sorted(set(raw) - allowed_keys)
+        if unexpected_keys:
+            raise WarmupError(
+                f"targeted snapshot file for {snapshot_id!r} contains unexpected top-level "
+                f"fields: {unexpected_keys!r}"
+            )
+        normalized[snapshot_id] = _normalize_snapshot_fragment_mapping(
+            {key: value for key, value in raw.items() if key != "version"},
+            context=f"targeted snapshot file for {snapshot_id!r}",
+        )
+    return normalized
+
+
+def _parse_snapshot_target_spec(spec: str) -> tuple[str, Path]:
+    if "=" not in spec:
+        raise WarmupError(
+            "snapshot target must use the form '<snapshot_id>=<path>'"
+        )
+    snapshot_id, raw_path = spec.split("=", 1)
+    normalized_snapshot_id = snapshot_id.strip()
+    normalized_path = raw_path.strip()
+    if not normalized_snapshot_id:
+        raise WarmupError("snapshot target is missing snapshot_id before '='")
+    if not normalized_path:
+        raise WarmupError("snapshot target is missing file path after '='")
+    return normalized_snapshot_id, Path(normalized_path)
+
+
+def _load_json_object(path: Path, *, context: str) -> Mapping[str, object]:
     __tracebackhide__ = True
-    shared = overrides.get("shared", {})
-    tests = overrides.get("tests", {})
+    if not path.exists():
+        raise WarmupError(f"{context} does not exist: {str(path)!r}")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise WarmupError(f"{context} {str(path)!r} is not valid JSON") from exc
+    if not isinstance(raw, Mapping):
+        raise WarmupError(f"{context} content must be a JSON object")
+    return raw
+
+
+def _normalize_snapshot_fragment_mapping(
+    fragment: object,
+    *,
+    context: str,
+) -> SnapshotFragment:
+    __tracebackhide__ = True
+    if not isinstance(fragment, Mapping):
+        raise WarmupError(f"{context} must be a mapping")
+    allowed_keys = {"shared", "tests"}
+    unexpected_keys = sorted(set(fragment) - allowed_keys)
+    if unexpected_keys:
+        raise WarmupError(f"{context} contains unexpected fields: {unexpected_keys!r}")
+    shared = fragment.get("shared", {})
+    tests = fragment.get("tests", {})
     if not isinstance(shared, Mapping):
-        raise WarmupError("snapshot file field 'shared' must be a mapping")
+        raise WarmupError(f"{context} field 'shared' must be a mapping")
     if not isinstance(tests, Mapping):
-        raise WarmupError("snapshot file field 'tests' must be a mapping")
-    normalized_tests: dict[str, dict[str, object]] = {}
+        raise WarmupError(f"{context} field 'tests' must be a mapping")
+    normalized_shared = {
+        str(public_id): _normalize_snapshot_entry(
+            value,
+            context=f"{context} shared entry {public_id!r}",
+        )
+        for public_id, value in shared.items()
+    }
+    normalized_tests: dict[str, dict[str, dict[str, object]]] = {}
     for test_id, values in tests.items():
+        normalized_test_id = str(test_id)
         if not isinstance(values, Mapping):
-            raise WarmupError("snapshot file per-test entry must be a mapping")
-        normalized_tests[str(test_id)] = dict(values)
-    return {"shared": dict(shared), "tests": normalized_tests}
+            raise WarmupError(f"{context} per-test entry {normalized_test_id!r} must be a mapping")
+        normalized_tests[normalized_test_id] = {
+            str(public_id): _normalize_snapshot_entry(
+                value,
+                context=(
+                    f"{context} per-test entry {normalized_test_id!r} override "
+                    f"{public_id!r}"
+                ),
+            )
+            for public_id, value in values.items()
+        }
+    return SnapshotFragment(
+        shared=normalized_shared,
+        tests=normalized_tests,
+    )
 
 
-def _validate_overrides(
+def _normalize_snapshot_entry(
+    entry: object,
+    *,
+    context: str,
+) -> dict[str, object]:
+    __tracebackhide__ = True
+    if not isinstance(entry, Mapping):
+        raise WarmupError(f"{context} must be a mapping")
+    allowed_keys = {"value"}
+    unexpected_keys = sorted(set(entry) - allowed_keys)
+    if unexpected_keys:
+        raise WarmupError(f"{context} contains unexpected fields: {unexpected_keys!r}")
+    normalized: dict[str, object] = {}
+    if "value" in entry:
+        normalized["value"] = entry["value"]
+    return normalized
+
+
+def _empty_snapshot_fragment() -> SnapshotFragment:
+    return SnapshotFragment(shared={}, tests={})
+
+
+def _producer_scope_id(request: pytest.FixtureRequest) -> str:
+    anchor = request.node.nodeid
+    if not anchor:
+        fixturedef = getattr(request, "_fixturedef", None)
+        anchor = getattr(fixturedef, "baseid", "") or ""
+    if anchor:
+        return f"{request.scope}:{anchor}::{request.fixturename}"
+    return f"{request.scope}::{request.fixturename}"
+
+
+def _producer_fixture_identity(request: pytest.FixtureRequest) -> str:
+    fixturedef = getattr(request, "_fixturedef", None)
+    baseid = getattr(fixturedef, "baseid", "") or request.node.nodeid or request.scope
+    return f"{baseid}::{request.fixturename}"
+
+
+def _resolve_snapshot_fragment(
+    *,
+    request: pytest.FixtureRequest,
+    state: WarmupSessionState,
+    snapshot_id: str | None,
+) -> SnapshotFragment:
+    __tracebackhide__ = True
+    inputs = _session_snapshot_inputs(request.config, state)
+    scope_id = _producer_scope_id(request)
+    targeted_fragment: SnapshotFragment | None = None
+    if snapshot_id is not None:
+        owner = _producer_fixture_identity(request)
+        existing_owner = state.snapshot_id_owners.get(snapshot_id)
+        if existing_owner is None:
+            state.snapshot_id_owners[snapshot_id] = owner
+        elif existing_owner != owner:
+            raise WarmupError(
+                f"snapshot_id {snapshot_id!r} is already used by producer {existing_owner!r}"
+            )
+        targeted_fragment = inputs.targeted_fragments.get(snapshot_id)
+    scoped_fragment = inputs.scoped_fragments.get(scope_id)
+    if targeted_fragment is not None and scoped_fragment is not None:
+        raise WarmupError(
+            f"producer scope {scope_id!r} matches both --warmup-snapshot and "
+            f"--warmup-snapshot-for {snapshot_id!r}"
+        )
+    if targeted_fragment is not None:
+        return targeted_fragment
+    if scoped_fragment is not None:
+        return scoped_fragment
+    return _empty_snapshot_fragment()
+
+
+def _filter_snapshot_fragment(
+    *,
+    normalized_nodes: tuple[NormalizedNode, ...],
+    fragment: SnapshotFragment,
+    selected_items: list[pytest.Item],
+) -> SnapshotFragment:
+    public_ids = {node.public_id for node in normalized_nodes if node.public_id is not None}
+    selected_test_ids = {item.nodeid for item in selected_items}
+    filtered_shared = {
+        public_id: dict(entry)
+        for public_id, entry in fragment.shared.items()
+        if public_id in public_ids
+    }
+    filtered_tests: dict[str, dict[str, dict[str, object]]] = {}
+    for test_id, values in fragment.tests.items():
+        if test_id not in selected_test_ids:
+            continue
+        filtered_values = {
+            public_id: dict(entry)
+            for public_id, entry in values.items()
+            if public_id in public_ids
+        }
+        if filtered_values:
+            filtered_tests[test_id] = filtered_values
+    return SnapshotFragment(
+        shared=filtered_shared,
+        tests=filtered_tests,
+    )
+
+
+def _validate_snapshot_fragment(
     normalized_nodes: tuple[NormalizedNode, ...],
     runtime_instances: tuple[RuntimeInstance, ...],
-    overrides: Mapping[str, dict[str, object]],
+    fragment: SnapshotFragment,
     selected_items: list[pytest.Item],
 ) -> None:
     __tracebackhide__ = True
     public_ids = {node.public_id for node in normalized_nodes if node.public_id is not None}
+    requirement_by_public_id = {
+        node.public_id: node.requirement for node in normalized_nodes if node.public_id is not None
+    }
     per_test_ids = {
         instance.node.public_id
         for instance in runtime_instances
@@ -831,20 +1196,74 @@ def _validate_overrides(
     }
     selected_test_ids = {item.nodeid for item in selected_items}
 
-    for public_id in overrides["shared"]:
+    for public_id, entry in fragment.shared.items():
         if public_id not in public_ids:
             raise WarmupError(f"unknown shared override id {public_id!r}")
         if public_id in per_test_ids:
             raise WarmupError(
                 f"shared override {public_id!r} targets a per-test runtime node"
             )
+        if "value" in entry:
+            requirement_by_public_id[public_id].owner_plan.validate_snapshot_value(
+                requirement_by_public_id[public_id],
+                entry["value"],
+            )
 
-        for test_id, values in overrides["tests"].items():
-            if test_id not in selected_test_ids:
-                raise WarmupError(f"unknown test id in overrides: {test_id!r}")
-            for public_id in values:
-                if public_id not in public_ids:
-                    raise WarmupError(f"unknown per-test override id {public_id!r}")
+    for test_id, values in fragment.tests.items():
+        if test_id not in selected_test_ids:
+            raise WarmupError(f"unknown test id in overrides: {test_id!r}")
+        for public_id, entry in values.items():
+            if public_id not in public_ids:
+                raise WarmupError(f"unknown per-test override id {public_id!r}")
+            if "value" in entry:
+                requirement_by_public_id[public_id].owner_plan.validate_snapshot_value(
+                    requirement_by_public_id[public_id],
+                    entry["value"],
+                )
+
+
+def _extract_overrides(fragment: SnapshotFragment) -> dict[str, dict[str, object]]:
+    shared = {
+        public_id: entry["value"]
+        for public_id, entry in fragment.shared.items()
+        if "value" in entry
+    }
+    tests: dict[str, dict[str, object]] = {}
+    for test_id, values in fragment.tests.items():
+        extracted_values = {
+            public_id: entry["value"]
+            for public_id, entry in values.items()
+            if "value" in entry
+        }
+        if extracted_values:
+            tests[test_id] = extracted_values
+    return {"shared": shared, "tests": tests}
+
+
+def _deserialize_overrides(
+    normalized_nodes: tuple[NormalizedNode, ...],
+    overrides: Mapping[str, dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    requirement_by_public_id = {
+        node.public_id: node.requirement for node in normalized_nodes if node.public_id is not None
+    }
+    shared: dict[str, object] = {}
+    for public_id, raw_value in overrides["shared"].items():
+        requirement = requirement_by_public_id[public_id]
+        shared[public_id] = requirement.owner_plan.deserialize_snapshot_value(
+            requirement,
+            raw_value,
+        )
+    tests: dict[str, dict[str, object]] = {}
+    for test_id, values in overrides["tests"].items():
+        tests[test_id] = {}
+        for public_id, raw_value in values.items():
+            requirement = requirement_by_public_id[public_id]
+            tests[test_id][public_id] = requirement.owner_plan.deserialize_snapshot_value(
+                requirement,
+                raw_value,
+            )
+    return {"shared": shared, "tests": tests}
 
 
 def _materialize(
@@ -902,10 +1321,19 @@ def _materialize(
         if pending:
             plan_nodes = _plan_nodes_for_instances(pending, store)
             runtime.start_batch(nodes=plan_nodes, store=store)
+            started_at = perf_counter()
             try:
                 plan.prepare(plan_nodes, runtime)
             finally:
                 runtime.finish_batch()
+            runtime.batch_reports.append(
+                {
+                    "plan": plan.name,
+                    "node_count": len(plan_nodes),
+                    "runtime_keys": [node.runtime_key for node in plan_nodes],
+                    "duration_ms": round((perf_counter() - started_at) * 1000, 3),
+                }
+            )
             _validate_batch_completion(plan_nodes, store)
 
 
@@ -994,3 +1422,420 @@ def _topologically_sorted_plans(
     if len(ordered) != len(plans):
         raise WarmupError("cross-plan dependency cycle detected")
     return ordered
+
+
+@dataclass(frozen=True)
+class WarmupPrepareOptions:
+    report_file: Path | None
+    export_template_file: Path | None
+    save_on_fail_file: Path | None
+
+
+def _resolve_prepare_options(config: pytest.Config) -> WarmupPrepareOptions:
+    _debug_artifacts_require_single_process(config)
+    return WarmupPrepareOptions(
+        report_file=_optional_path(config.getoption("warmup_report")),
+        export_template_file=_optional_path(config.getoption("warmup_export_template")),
+        save_on_fail_file=_optional_path(config.getoption("warmup_save_on_fail")),
+    )
+
+
+def _optional_path(value: object) -> Path | None:
+    if value in {None, ""}:
+        return None
+    return Path(str(value))
+
+
+def _debug_artifacts_require_single_process(config: pytest.Config) -> None:
+    if not _xdist_enabled(config):
+        return
+    if any(
+        _optional_path(value) is not None
+        for value in (
+            config.getoption("warmup_export_template"),
+            config.getoption("warmup_report"),
+            config.getoption("warmup_save_on_fail"),
+        )
+    ):
+        raise WarmupError(
+            "debug artifact outputs are not supported when pytest-xdist is active; "
+            "disable --warmup-export-template/--warmup-report/--warmup-save-on-fail "
+            "or run without xdist"
+        )
+
+
+def _xdist_enabled(config: pytest.Config) -> bool:
+    if hasattr(config, "workerinput"):
+        return True
+    numprocesses = getattr(getattr(config, "option", None), "numprocesses", 0)
+    try:
+        return int(numprocesses or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _warmup_bindings_for_callable(func: object) -> tuple[WarmupBinding, ...]:
+    bindings = getattr(func, WARMUP_BINDINGS_ATTR, None)
+    if bindings is not None:
+        return tuple(bindings)
+    binding = getattr(func, WARMUP_BINDING_ATTR, None)
+    if binding is None:
+        return ()
+    return (binding,)
+
+
+def _normalize_bindings(
+    *,
+    existing_bindings: tuple[WarmupBinding, ...],
+    new_binding: WarmupBinding,
+    callable_name: str,
+    base_signature: Signature,
+) -> tuple[WarmupBinding, ...]:
+    existing_argument_names = {binding.argument_name for binding in existing_bindings}
+    if new_binding.argument_name in existing_argument_names:
+        raise WarmupError(
+            f"warmup_param argument {new_binding.argument_name!r} is already bound on "
+            f"callable {callable_name!r}"
+        )
+    if new_binding.argument_name not in base_signature.parameters:
+        raise WarmupError(
+            f"warmup_param argument {new_binding.argument_name!r} is missing from callable "
+            f"{callable_name!r}"
+        )
+    return (*existing_bindings, new_binding)
+
+
+def _select_binding_producer_fixture(
+    bindings: tuple[WarmupBinding, ...],
+    callable_name: str,
+) -> str | None:
+    explicit_fixture_names = {
+        binding.producer_fixture
+        for binding in bindings
+        if binding.producer_fixture is not None
+    }
+    if len(explicit_fixture_names) > 1:
+        raise WarmupError(
+            f"warmup_param bindings on callable {callable_name!r} must agree on "
+            "producer_fixture when one is specified"
+        )
+    if explicit_fixture_names:
+        return next(iter(explicit_fixture_names))
+    return None
+
+
+def _build_visible_signature(
+    base_signature: Signature,
+    bindings: tuple[WarmupBinding, ...],
+) -> Signature:
+    bound_argument_names = {binding.argument_name for binding in bindings}
+    visible_parameters = [
+        parameter
+        for name, parameter in base_signature.parameters.items()
+        if name not in bound_argument_names
+    ]
+    if "request" not in base_signature.parameters:
+        visible_parameters.append(
+            Parameter(
+                "request",
+                kind=Parameter.KEYWORD_ONLY,
+            )
+        )
+    return Signature(parameters=visible_parameters)
+
+
+def _require_json_serializable(value: object, *, context: str) -> None:
+    try:
+        json.dumps(value)
+    except TypeError as exc:
+        raise WarmupError(f"{context} is not JSON-serializable") from exc
+
+
+def _build_snapshot_fragment_template(
+    runtime_instances: tuple[RuntimeInstance, ...],
+) -> dict[str, object]:
+    shared: dict[str, dict[str, object]] = {}
+    tests: dict[str, dict[str, dict[str, object]]] = {}
+    for instance in runtime_instances:
+        public_id = instance.node.public_id
+        if public_id is None:
+            continue
+        if instance.per_test:
+            test_id = instance.test_id or ""
+            tests.setdefault(test_id, {})[public_id] = {}
+            continue
+        shared[public_id] = {}
+    return {
+        "shared": dict(sorted(shared.items())),
+        "tests": {test_id: dict(sorted(values.items())) for test_id, values in sorted(tests.items())},
+    }
+
+
+def _build_saved_snapshot_fragment(
+    *,
+    normalized_nodes: tuple[NormalizedNode, ...],
+    runtime_instances: tuple[RuntimeInstance, ...],
+    store: ProducedValueStore,
+) -> dict[str, object]:
+    fragment = _build_snapshot_fragment_template(runtime_instances)
+    for node in normalized_nodes:
+        if node.public_id is None:
+            continue
+        runtime_key = store.shared_by_requirement.get(node.requirement)
+        if runtime_key is None:
+            continue
+        if runtime_key in store.exceptions_by_runtime_key:
+            continue
+        fragment["shared"][node.public_id]["value"] = node.owner_plan.serialize_snapshot_value(
+            node.requirement,
+            store.values_by_runtime_key[runtime_key],
+        )
+    for (requirement, test_id), runtime_key in sorted(store.per_test_by_requirement.items()):
+        if runtime_key in store.exceptions_by_runtime_key:
+            continue
+        if requirement.id is None:
+            continue
+        fragment["tests"].setdefault(test_id, {}).setdefault(requirement.id, {})["value"] = requirement.owner_plan.serialize_snapshot_value(
+            requirement,
+            store.values_by_runtime_key[runtime_key],
+        )
+    return fragment
+
+
+def _build_scoped_snapshot_document(
+    *,
+    scope_id: str,
+    fragment: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "version": 1,
+        "scopes": {
+            scope_id: _json_friendly(dict(fragment)),
+        },
+    }
+
+
+def _build_preparation_report(
+    *,
+    scope_id: str,
+    runtime: RuntimeContext,
+    selected_roots: list[SelectedRoot],
+    normalized_nodes: tuple[NormalizedNode, ...],
+    runtime_instances: tuple[RuntimeInstance, ...],
+    effective_per_test: Mapping[WarmupRequirement, bool],
+    raw_overrides: Mapping[str, dict[str, object]],
+    store: ProducedValueStore,
+    status: str,
+    error: BaseException | None,
+) -> dict[str, object]:
+    return {
+        "scope_id": scope_id,
+        "status": status,
+        "producer_scope": runtime.producer_scope,
+        "selected_test_ids": list(runtime.selected_test_ids),
+        "selected_roots": [
+            {
+                "consumer_id": root.consumer_id,
+                "source_kind": root.source_kind,
+                "source_name": root.source_name,
+                "argument_name": root.binding.argument_name,
+                "plan": root.binding.requirement.owner_plan.name,
+                "public_id": root.binding.requirement.id,
+                "producer_fixture": root.binding.producer_fixture,
+            }
+            for root in selected_roots
+        ],
+        "normalized_nodes": [
+            {
+                "node_key": node.node_key,
+                "plan": node.owner_plan.name,
+                "public_id": node.public_id,
+                "payload": _json_friendly(dict(node.requirement.payload)),
+                "dependency_keys": list(node.dependency_keys),
+                "declared_per_test": node.requirement.is_per_test,
+                "effective_per_test": effective_per_test[node.requirement],
+            }
+            for node in normalized_nodes
+        ],
+        "runtime_instances": [
+            {
+                "runtime_key": instance.runtime_key,
+                "node_key": instance.node.node_key,
+                "plan": instance.node.owner_plan.name,
+                "public_id": instance.node.public_id,
+                "test_id": instance.test_id,
+                "per_test": instance.per_test,
+                "dependency_runtime_keys": {
+                    key: list(value) if isinstance(value, tuple) else value
+                    for key, value in instance.dependency_runtime_keys.items()
+                },
+                "status": _runtime_instance_status(instance, store),
+            }
+            for instance in runtime_instances
+        ],
+        "overrides": {
+            "shared": _json_friendly(dict(raw_overrides["shared"])),
+            "tests": _json_friendly(
+                {test_id: dict(values) for test_id, values in raw_overrides["tests"].items()}
+            ),
+        },
+        "batch_reports": list(runtime.batch_reports),
+        "trace": list(runtime.trace),
+        "error": _error_metadata(error) if error is not None else None,
+    }
+
+
+def _runtime_instance_status(
+    instance: RuntimeInstance,
+    store: ProducedValueStore,
+) -> str:
+    runtime_key = instance.runtime_key
+    if runtime_key in store.exceptions_by_runtime_key:
+        return "exception"
+    if runtime_key in store.values_by_runtime_key:
+        return "value"
+    return "pending"
+
+
+def _error_metadata(error: BaseException) -> dict[str, str]:
+    return {
+        "type": error.__class__.__name__,
+        "message": str(error),
+    }
+
+
+def _write_json_file(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _best_effort_write_json_file(path: Path, payload: object) -> None:
+    try:
+        _write_json_file(path, payload)
+    except Exception:
+        return
+
+
+def _merge_scoped_document_file(
+    path: Path,
+    *,
+    scope_id: str,
+    fragment: Mapping[str, object],
+) -> None:
+    scopes = _read_existing_scoped_document_sections(path)
+    scopes[scope_id] = _json_friendly(dict(fragment))
+    _write_json_file(
+        path,
+        {
+            "version": 1,
+            "scopes": dict(sorted(scopes.items())),
+        },
+    )
+
+
+def _best_effort_merge_scoped_document_file(
+    path: Path,
+    *,
+    scope_id: str,
+    fragment: Mapping[str, object],
+) -> None:
+    try:
+        _merge_scoped_document_file(path, scope_id=scope_id, fragment=fragment)
+    except Exception:
+        return
+
+
+def _read_existing_scoped_document_sections(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    raw = _load_json_object(path, context="debug artifact file")
+    version = raw.get("version")
+    if version != 1:
+        raise WarmupError("debug artifact file field 'version' must be 1")
+    scopes = raw.get("scopes", {})
+    if not isinstance(scopes, Mapping):
+        raise WarmupError("debug artifact file field 'scopes' must be a mapping")
+    normalized: dict[str, object] = {}
+    for scope_id, fragment in scopes.items():
+        if not isinstance(fragment, Mapping):
+            raise WarmupError(f"debug artifact scope {scope_id!r} must be a mapping")
+        normalized[str(scope_id)] = _json_friendly(dict(fragment))
+    return normalized
+
+
+def _safe_build_saved_snapshot(
+    *,
+    scope_id: str,
+    normalized_nodes: tuple[NormalizedNode, ...],
+    runtime_instances: tuple[RuntimeInstance, ...],
+    store: ProducedValueStore,
+    runtime: RuntimeContext,
+    error: BaseException,
+) -> dict[str, object]:
+    del runtime, error
+    try:
+        return _build_scoped_snapshot_document(
+            scope_id=scope_id,
+            fragment=_build_saved_snapshot_fragment(
+                normalized_nodes=normalized_nodes,
+                runtime_instances=runtime_instances,
+                store=store,
+            ),
+        )
+    except Exception:
+        return _build_scoped_snapshot_document(
+            scope_id=scope_id,
+            fragment=_build_snapshot_fragment_template(runtime_instances),
+        )
+
+
+def _safe_build_failure_report(
+    *,
+    scope_id: str,
+    runtime: RuntimeContext,
+    selected_roots: list[SelectedRoot],
+    normalized_nodes: tuple[NormalizedNode, ...],
+    runtime_instances: tuple[RuntimeInstance, ...],
+    effective_per_test: Mapping[WarmupRequirement, bool],
+    raw_overrides: Mapping[str, dict[str, object]],
+    store: ProducedValueStore,
+    error: BaseException,
+) -> dict[str, object]:
+    try:
+        return _build_preparation_report(
+            scope_id=scope_id,
+            runtime=runtime,
+            selected_roots=selected_roots,
+            normalized_nodes=normalized_nodes,
+            runtime_instances=runtime_instances,
+            effective_per_test=effective_per_test,
+            raw_overrides=raw_overrides,
+            store=store,
+            status="failed",
+            error=error,
+        )
+    except Exception as report_error:
+        return {
+            "scope_id": scope_id,
+            "status": "failed",
+            "producer_scope": runtime.producer_scope,
+            "selected_test_ids": list(runtime.selected_test_ids),
+            "error": _error_metadata(error),
+            "report_error": _error_metadata(report_error),
+            "trace": list(runtime.trace),
+        }
+
+
+def _json_friendly(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(key): _json_friendly(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_friendly(item) for item in value]
+    try:
+        json.dumps(value)
+    except TypeError:
+        return repr(value)
+    return value

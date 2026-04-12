@@ -28,8 +28,7 @@ def test_missing_snapshot_file_fails_fast(pytester: pytest.Pytester) -> None:
 
         @pytest.fixture(scope="session")
         def prepare_data(warmup_mgr):
-            snapshot_file = Path(__file__).with_name("missing.snapshot.json")
-            return warmup_mgr.use(facility, program, inventory).prepare(snapshot_file=snapshot_file)
+            return warmup_mgr.use(facility, program, inventory).prepare()
         """
     )
     pytester.makepyfile(
@@ -42,7 +41,7 @@ def test_missing_snapshot_file_fails_fast(pytester: pytest.Pytester) -> None:
             assert products
         """
     )
-    result = pytester.runpytest("-q")
+    result = pytester.runpytest("--warmup-snapshot=missing.snapshot.json", "-q")
     result.assert_outcomes(errors=1)
     assert "snapshot file does not exist" in result.stdout.str()
 
@@ -68,8 +67,7 @@ def test_invalid_snapshot_file_fails_fast(pytester: pytest.Pytester) -> None:
 
         @pytest.fixture(scope="session")
         def prepare_data(warmup_mgr):
-            snapshot_file = Path(__file__).with_name("broken.snapshot.json")
-            return warmup_mgr.use(facility, program, inventory).prepare(snapshot_file=snapshot_file)
+            return warmup_mgr.use(facility, program, inventory).prepare()
         """
     )
     pytester.makepyfile(
@@ -82,6 +80,6 @@ def test_invalid_snapshot_file_fails_fast(pytester: pytest.Pytester) -> None:
             assert products
         """
     )
-    result = pytester.runpytest("-q")
+    result = pytester.runpytest("--warmup-snapshot=broken.snapshot.json", "-q")
     result.assert_outcomes(errors=1)
     assert "is not valid JSON" in result.stdout.str()
