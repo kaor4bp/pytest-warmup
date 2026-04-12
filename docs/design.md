@@ -109,7 +109,8 @@ Rules:
 
 - snapshot parsing happens once per pytest session, but producer materialization still happens at the
   producer fixture scope;
-- `scope_id` is computed from the producer scope, the current container nodeid, and the producer fixture name;
+- `scope_id` is computed from the producer scope, a stable container anchor, and the producer fixture name;
+- module, class, function, and session scopes use the usual pytest nodeid-style anchor; package scope uses the package path anchor, for example `package:pkg::prepare_data`;
 - shared nodes are addressed by `id`;
 - per-test nodes are addressed by `tests[nodeid][id]`;
 - entries use `{}` for addressable nodes without an explicit override and `{"value": ...}` for an explicit override;

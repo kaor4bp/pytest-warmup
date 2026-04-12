@@ -213,7 +213,8 @@ Targeted fragment shape:
 
 Rules:
 
-- `scope_id` is computed from the producer scope, the current container nodeid, and the producer fixture name;
+- `scope_id` is computed from the producer scope, a stable container anchor, and the producer fixture name;
+- module, class, function, and session scopes use the usual pytest nodeid-style anchor; package scope uses the package path anchor, for example `package:pkg::prepare_data`;
 - shared nodes are addressed by `id`;
 - per-test nodes are addressed by `tests[nodeid][id]`;
 - declarations that are effectively per-test may not be overridden through `shared`;
