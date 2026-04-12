@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.4
+
 ## 0.1.2
 
 - Added package-scoped producer support, including stable package `scope_id` generation for snapshot and debug artifacts.
