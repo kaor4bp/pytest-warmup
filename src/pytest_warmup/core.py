@@ -1148,6 +1148,31 @@ def _resolve_snapshot_fragment(
     return _empty_snapshot_fragment()
 
 
+def finalize_snapshot_target_usage(
+    config: pytest.Config,
+    state: WarmupSessionState,
+) -> str | None:
+    """Return an error message when CLI-targeted snapshot ids were never used."""
+    __tracebackhide__ = True
+    targeted_specs = tuple(config.getoption("warmup_snapshot_for") or ())
+    if not targeted_specs:
+        return None
+    inputs = _session_snapshot_inputs(config, state)
+    unused_ids = sorted(
+        snapshot_id
+        for snapshot_id in inputs.targeted_fragments
+        if snapshot_id not in state.snapshot_id_owners
+    )
+    if not unused_ids:
+        return None
+    rendered_ids = ", ".join(repr(snapshot_id) for snapshot_id in unused_ids)
+    return (
+        "unused --warmup-snapshot-for targets: "
+        f"{rendered_ids}; no producer executed prepare(snapshot_id=...) "
+        "with these ids in this run"
+    )
+
+
 def _filter_snapshot_fragment(
     *,
     normalized_nodes: tuple[NormalizedNode, ...],

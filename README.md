@@ -219,6 +219,7 @@ Rules:
 - an empty object means "this node is addressable here, but no explicit override value is provided";
 - `{"value": ...}` means "use this explicit override value";
 - if one producer matches both a scoped bundle section and a targeted `snapshot_id` fragment, preparation fails fast instead of applying precedence magic.
+- if `--warmup-snapshot-for SNAPSHOT_ID=...` is provided, at least one producer in the current run must execute `prepare(snapshot_id=SNAPSHOT_ID)`, or the run fails with a CLI-usage error.
 
 Plans may validate, deserialize, and serialize snapshot values by overriding:
 

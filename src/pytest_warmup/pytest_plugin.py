@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from .core import CURRENT_FIXTURE_REQUEST, WarmupManager, WarmupSessionState
+from .core import (
+    CURRENT_FIXTURE_REQUEST,
+    WarmupManager,
+    WarmupSessionState,
+    finalize_snapshot_target_usage,
+)
 
 STATE_KEY: pytest.StashKey[WarmupSessionState] = pytest.StashKey()
 
@@ -82,3 +87,22 @@ def pytest_fixture_setup(fixturedef: pytest.FixtureDef[object], request: pytest.
 def warmup_mgr(pytestconfig: pytest.Config) -> WarmupManager:
     """Session-scoped manager used by producer fixtures."""
     return WarmupManager(pytestconfig.stash[STATE_KEY])
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int | pytest.ExitCode) -> None:
+    del exitstatus
+    state = session.config.stash[STATE_KEY]
+    message = finalize_snapshot_target_usage(session.config, state)
+    if message is None:
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.ensure_newline()
+        reporter.section("pytest-warmup", sep="-", red=True, bold=True)
+        reporter.line(message, red=True)
+    if session.exitstatus in {
+        pytest.ExitCode.OK,
+        pytest.ExitCode.TESTS_FAILED,
+        pytest.ExitCode.NO_TESTS_COLLECTED,
+    }:
+        session.exitstatus = pytest.ExitCode.USAGE_ERROR

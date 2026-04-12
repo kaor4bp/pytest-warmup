@@ -15,6 +15,7 @@
   - one targeted snapshot fragment attached through `prepare(snapshot_id=...)` and `--warmup-snapshot-for`
 - Moved snapshot parsing to session level while keeping materialization at the producer fixture scope.
 - Switched snapshot entries to an addressable map with optional explicit `value` payloads.
+- Added fail-fast validation for unused `--warmup-snapshot-for SNAPSHOT_ID=...` targets in the current run.
 - Made debug artifact outputs (`export-template`, `report`, `save-on-fail`) emit versioned scoped documents and merge multiple producer scopes in one process.
 - Added fail-fast protection for debug artifact outputs under pytest-xdist instead of pretending that one shared output file is safe across workers.
 - Improved duplicate-id guidance so reuse points back to importing the same `WarmupRequirement` object instead of redeclaring it.

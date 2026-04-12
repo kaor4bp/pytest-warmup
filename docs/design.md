@@ -113,6 +113,7 @@ Rules:
 - entries use `{}` for addressable nodes without an explicit override and `{"value": ...}` for an explicit override;
 - declarations that are effectively per-test may not be overridden through `shared`;
 - if one producer matches both a scoped bundle section and a targeted `snapshot_id` fragment, preparation fails fast;
+- if `--warmup-snapshot-for SNAPSHOT_ID=...` is provided, at least one producer in the current run must execute `prepare(snapshot_id=SNAPSHOT_ID)`, or the run ends with a CLI-usage error;
 - `--warmup-export-template` writes the same versioned scoped shape for the currently selected graph;
 - `--warmup-report` writes a versioned scoped report keyed by producer `scope_id`;
 - `--warmup-save-on-fail` writes the same versioned scoped shape with any values that were already materialized.

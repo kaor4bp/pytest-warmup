@@ -263,6 +263,72 @@ def test_cli_snapshot_for_conflicts_with_scoped_snapshot_for_same_producer(
     assert "matches both --warmup-snapshot and --warmup-snapshot-for 'inventory-main'" in result.stdout.str()
 
 
+def test_cli_snapshot_for_fails_when_target_id_is_unused(
+    pytester: pytest.Pytester,
+) -> None:
+    targeted_path = pytester.path / "targeted.snapshot.json"
+    targeted_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "shared": {
+                    "products_alpha": {
+                        "value": {
+                            "batch_id": "debug-targeted",
+                            "program_id": "program-targeted",
+                            "qty": 10,
+                            "upc": "123",
+                        }
+                    }
+                },
+                "tests": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    pytester.makeconftest(
+        f"""
+        import sys
+        import pytest
+
+        sys.path.insert(0, {str(SRC_PATH)!r})
+        sys.path.insert(0, {str(ROOT_PATH)!r})
+        from tests.support.demo_domain import FacilityPlan, InventoryPlan, ProgramPlan
+
+        facility = FacilityPlan("facility")
+        program = ProgramPlan("program")
+        inventory = InventoryPlan("inventory")
+        facility_de = facility.require(country="DE", id="facility_de")
+        program_main = program.require(program_profile="MAIN", facility=facility_de, id="program_main")
+        products_alpha = inventory.require(qty=10, upc="123", id="products_alpha", program=program_main)
+
+        @pytest.fixture(scope="module")
+        def prepare_data(warmup_mgr):
+            return warmup_mgr.use(facility, program, inventory).prepare()
+        """
+    )
+    pytester.makepyfile(
+        test_unused_target="""
+        from conftest import products_alpha
+        from pytest_warmup import warmup_param
+
+        @warmup_param("products", products_alpha)
+        def test_unused_target(prepare_data, products):
+            del prepare_data
+            assert products["qty"] == 10
+        """
+    )
+    result = pytester.runpytest(
+        f"--warmup-snapshot-for=inventory-main={targeted_path}",
+        "-q",
+    )
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    assert (
+        "unused --warmup-snapshot-for targets: 'inventory-main'; "
+        "no producer executed prepare(snapshot_id=...) with these ids in this run"
+    ) in result.stdout.str()
+
+
 def test_cli_export_template_writes_selected_graph_snapshot(
     pytester: pytest.Pytester,
 ) -> None:
