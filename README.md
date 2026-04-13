@@ -277,6 +277,7 @@ Further design details live in:
 uv venv .venv
 uv pip install --python .venv/bin/python -e ".[dev]"
 ./.venv/bin/python -m pytest -q
+python scripts/run_compat.py --list
 ./.venv/bin/python -m build
 ```
 

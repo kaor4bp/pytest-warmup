@@ -1,0 +1,19 @@
+[profiles.py313-pytest84]
+python = "python3.13"
+pytest = "==8.4.0"
+description = "Lower bound for the declared pytest support range on Python 3.13."
+
+[profiles.py313-pytest9]
+python = "python3.13"
+pytest = ">=9,<10"
+description = "Latest pytest 9.x on Python 3.13."
+
+[profiles.py314-pytest84]
+python = "python3.14"
+pytest = "==8.4.0"
+description = "Lower bound for the declared pytest support range on Python 3.14."
+
+[profiles.py314-pytest9]
+python = "python3.14"
+pytest = ">=9,<10"
+description = "Latest pytest 9.x on Python 3.14."

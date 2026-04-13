@@ -37,6 +37,8 @@ Recommended:
 
 ```bash
 ./.venv/bin/python -m pytest -q
+python scripts/run_compat.py py313-pytest84 --recreate
+python scripts/run_compat.py py314-pytest9 --recreate
 ./.venv/bin/python -m build
 ./.venv/bin/python -m twine check dist/*
 ```
@@ -52,6 +54,7 @@ Recommended:
 The publish workflow:
 
 - checks out the repository;
+- runs the compatibility matrix from [`compat/profiles.toml`](../compat/profiles.toml) before building distributions;
 - builds `sdist` and `wheel`;
 - runs `twine check dist/*`;
 - uploads the built distributions as an artifact;

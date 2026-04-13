@@ -19,6 +19,17 @@ Run the local checks before proposing changes:
 ./.venv/bin/python -m twine check dist/*
 ```
 
+For pytest compatibility checks, use the profile runner:
+
+```bash
+python scripts/run_compat.py --list
+python scripts/run_compat.py py313-pytest84 --recreate
+python scripts/run_compat.py py314-pytest9 --recreate
+python scripts/run_compat.py --python python3.11 --pytest-spec '==7.4.4' --recreate -- -q
+```
+
+The built-in profiles in [`compat/profiles.toml`](compat/profiles.toml) should stay aligned with the support range we actually claim. Ad-hoc runs are for exploration; they do not automatically widen the declared support contract.
+
 Before publishing or cutting a release candidate, also do one external-user smoke check from the built wheel: create a fresh virtual environment, install the wheel from `dist/`, and run one of the example tests without editable-install path hacks.
 
 For the repository-side release flow, see [`docs/publishing.md`](docs/publishing.md).

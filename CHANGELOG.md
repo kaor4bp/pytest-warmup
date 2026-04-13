@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added compatibility profiles plus a local runner for explicit Python/pytest combinations.
+- Gated the publish workflow on the compatibility profile matrix before building and uploading distributions.
 - Switched package versioning to Git tag derived builds through `hatch-vcs`.
 - Removed the fallback producer fixture seam. Producer resolution now uses only the ordinary pytest dependency chain plus explicit `producer_fixture="..."` disambiguation.
 
