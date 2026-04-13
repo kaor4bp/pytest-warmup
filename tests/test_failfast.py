@@ -44,8 +44,7 @@ def test_missing_producer_dependency_chain_fails(pytester: pytest.Pytester) -> N
     result.assert_outcomes(errors=1)
     result.stdout.fnmatch_lines(
         [
-            "*no producer fixture found in pytest dependency chain and no "
-            "'warmup_autoresolve_producer' fixture is available*"
+            "*no producer fixture found in pytest dependency chain*"
         ]
     )
 
@@ -309,44 +308,4 @@ def test_named_producer_fixture_must_be_in_dependency_chain(
     result.assert_outcomes(failed=1)
     result.stdout.fnmatch_lines(
         ["*producer fixture 'prepare_data' is not in this dependency chain*"]
-    )
-
-
-def test_autoresolve_producer_fixture_must_return_prepared_scope(
-    pytester: pytest.Pytester,
-) -> None:
-    pytester.makeconftest(
-        f"""
-        import sys
-
-        sys.path.insert(0, {str(SRC_PATH)!r})
-        sys.path.insert(0, {str(ROOT_PATH)!r})
-        """
-    )
-    pytester.makepyfile(
-        """
-        import pytest
-        from tests.support.demo_domain import FacilityPlan, InventoryPlan, ProgramPlan
-        from pytest_warmup import warmup_param
-
-        facility = FacilityPlan("facility")
-        program = ProgramPlan("program")
-        inventory = InventoryPlan("inventory")
-        facility_de = facility.require(country="DE", id="facility_de")
-        program_main = program.require(program_profile="MAIN", facility=facility_de, id="program_main")
-        products_alpha = inventory.require(qty=10, upc="123", id="products_alpha", program=program_main)
-
-        @pytest.fixture
-        def warmup_autoresolve_producer():
-            return {"not": "prepared"}
-
-        @warmup_param("products", products_alpha)
-        def test_fail(products):
-            assert products
-        """
-    )
-    result = pytester.runpytest("-q")
-    result.assert_outcomes(failed=1)
-    result.stdout.fnmatch_lines(
-        ["*producer fixture 'warmup_autoresolve_producer' must return a prepared warmup scope*"]
     )

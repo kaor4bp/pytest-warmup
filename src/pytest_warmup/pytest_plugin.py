@@ -4,12 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from .core import (
-    CURRENT_FIXTURE_REQUEST,
-    WarmupManager,
-    WarmupSessionState,
-    finalize_snapshot_target_usage,
-)
+from ._snapshot import WarmupSessionState, finalize_snapshot_target_usage
+from .core import CURRENT_FIXTURE_REQUEST, WarmupManager
 
 STATE_KEY: pytest.StashKey[WarmupSessionState] = pytest.StashKey()
 

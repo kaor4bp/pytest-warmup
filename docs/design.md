@@ -4,16 +4,17 @@
 
 The package is meant for test suites where expensive external-domain objects should be prepared in batches and then distributed into tests through explicit pytest producer fixtures.
 
-The preferred shape is still an ordinary producer fixture in the pytest dependency chain. As a narrow convenience, `@warmup_param(...)` may also resolve a producer through an explicit `producer_fixture="..."` name that already exists in that dependency chain, or through a project-local `warmup_autoresolve_producer` fixture.
+The preferred shape is an ordinary producer fixture in the pytest dependency chain. `@warmup_param(...)` may also resolve a producer through an explicit `producer_fixture="..."` name that already exists in that dependency chain.
 
 Producer resolution rules:
 
 1. `producer_fixture="..."` wins when present, but the named fixture must already be part of the pytest dependency chain.
 2. Otherwise, one prepared producer discovered in the dependency chain is accepted.
-3. Otherwise, `warmup_autoresolve_producer` is used as a narrow fallback.
-4. Otherwise, producer resolution fails fast.
+3. Otherwise, producer resolution fails fast.
 
-This keeps the default explicit while still allowing two controlled convenience paths.
+This keeps the default explicit while still allowing one controlled disambiguation path.
+
+When multiple producer fixtures for the same plan coexist inside one selected scope, an explicit `producer_fixture="..."` also scopes root collection for `prepare(...)`. The chosen producer only prepares bindings that explicitly point at it; sibling producers in the same module/class/session do not implicitly inherit those roots.
 
 Supported producer scopes are `session`, `package`, `module`, `class`, and `function`.
 

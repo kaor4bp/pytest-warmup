@@ -106,8 +106,8 @@ def test_profile(prepare_data, prepared_program, prepared_products):
 
 For full runnable examples, see:
 
-- [`examples/basic_usage.py`](examples/basic_usage.py)
-- [`examples/autoresolve_usage.py`](examples/autoresolve_usage.py) for fixture-side autoresolve binding
+- [`examples/basic_usage.py`](examples/basic_usage.py) for the smallest explicit producer/test flow
+- [`examples/fixture_binding_usage.py`](examples/fixture_binding_usage.py) for fixture-side binding plus targeted snapshot override
 - [`examples/named_producer_usage.py`](examples/named_producer_usage.py)
 
 ## Requirement Identity And Reuse
@@ -130,31 +130,17 @@ The default model stays explicit: a test or fixture depends on a producer fixtur
 Recommended order:
 
 1. use an explicit producer argument for the default, most readable path;
-2. use `warmup_autoresolve_producer` when you want less producer boilerplate but still keep one clearly defined producer seam;
-3. use `producer_fixture="..."` only to disambiguate between producers that are already present in the pytest dependency chain.
+2. use `producer_fixture="..."` only to disambiguate between producers that are already present in the pytest dependency chain.
 
 Producer resolution rules:
 
 1. if `producer_fixture="..."` is provided, that fixture must already be part of the pytest dependency chain and is used as the producer;
 2. otherwise, if the dependency chain already contains exactly one prepared producer, that producer is used;
-3. otherwise, `warmup_autoresolve_producer` is used as a narrow fallback if it exists;
-4. otherwise, producer resolution fails fast.
+3. otherwise, producer resolution fails fast.
 
-Producer convenience does not bypass normal pytest scope rules. A narrower producer is still invalid for a wider-scope consumer, and `warmup_autoresolve_producer` does not widen fixture visibility.
+Producer resolution does not bypass normal pytest scope rules. A narrower producer is still invalid for a wider-scope consumer.
 
-Example of the fallback fixture:
-
-```python
-@pytest.fixture
-def warmup_autoresolve_producer(prepare_data):
-    return prepare_data
-
-
-@pytest.fixture
-@warmup_param("prepared_profile", profile_main)
-def prepared_profile_fixture(prepared_profile):
-    return prepared_profile
-```
+The same explicit producer choice also constrains graph selection during `prepare(...)`. If one module contains multiple producer fixtures for the same plan, bindings that declare `producer_fixture="prepare_data_a"` only contribute roots to `prepare_data_a`; they are not silently prepared by sibling producers in the same scope.
 
 ## Snapshot File Overrides
 
@@ -253,7 +239,7 @@ These debug artifact outputs are single-process tools. When pytest-xdist is acti
 Common producer-resolution errors usually mean one of these:
 
 - `no producer fixture found in pytest dependency chain ...`
-  The decorated test or fixture is not connected to any producer fixture, and no `warmup_autoresolve_producer` fallback exists.
+  The decorated test or fixture is not connected to any producer fixture that prepares the selected warmup graph.
 - `multiple producer fixtures found in pytest dependency chain`
   The current dependency chain exposes more than one prepared producer. Simplify the chain or use `producer_fixture="..."` to pick one explicitly.
 - `producer fixture '...' is not in this dependency chain`

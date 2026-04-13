@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Removed the fallback producer fixture seam. Producer resolution now uses only the ordinary pytest dependency chain plus explicit `producer_fixture="..."` disambiguation.
+
 ## 0.1.4
 
 ## 0.1.2

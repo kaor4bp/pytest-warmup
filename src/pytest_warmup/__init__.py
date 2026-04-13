@@ -2,8 +2,8 @@
 
 from importlib.metadata import version as _package_version
 
+from ._errors import WarmupError
 from .core import (
-    WarmupError,
     WarmupPlan,
     WarmupRequirement,
     warmup_param,

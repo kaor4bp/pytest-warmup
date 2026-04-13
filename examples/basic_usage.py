@@ -111,10 +111,10 @@ items_alpha = items.require(
 
 @pytest.fixture(scope="module")
 def prepare_data(warmup_mgr):
-    return warmup_mgr.use(workspace, profile, items).prepare(snapshot_id="basic-usage")
+    return warmup_mgr.use(workspace, profile, items).prepare()
 
 
 @warmup_param("prepared_items", items_alpha)
 def test_items_are_available(prepare_data, prepared_items):
-    assert prepared_items["profile_id"] == "debug-profile"
+    assert prepared_items["profile_id"] == "profile-main"
     assert prepared_items["count"] == 10

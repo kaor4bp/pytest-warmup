@@ -111,17 +111,15 @@ items_alpha = items.require(
 
 @pytest.fixture(scope="module")
 def prepare_data(warmup_mgr):
-    return warmup_mgr.use(workspace, profile, items).prepare(snapshot_id="autoresolve-usage")
-
-
-@pytest.fixture
-def warmup_autoresolve_producer(prepare_data):
-    return prepare_data
+    return warmup_mgr.use(workspace, profile, items).prepare(
+        snapshot_id="fixture-binding-usage"
+    )
 
 
 @pytest.fixture
 @warmup_param("prepared_items", items_alpha)
-def prepared_items_fixture(prepared_items):
+def prepared_items_fixture(prepare_data, prepared_items):
+    del prepare_data
     return prepared_items
 
 
