@@ -13,7 +13,7 @@ authors = [
   { name = "OpenAI Codex collaboration" },
 ]
 dependencies = [
-  "pytest>=8.4",
+  "pytest>=8.4,<10",
 ]
 keywords = [
   "pytest",
@@ -42,7 +42,7 @@ Issues = "https://github.com/kaor4bp/pytest-warmup/issues"
 [project.optional-dependencies]
 dev = [
   "build>=1.2",
-  "pytest>=8.4",
+  "pytest>=8.4,<10",
   "twine>=6.1",
 ]
 
@@ -61,7 +61,7 @@ local_scheme = "no-local-version"
 [dependency-groups]
 dev = [
   "build>=1.2",
-  "pytest>=8.4",
+  "pytest>=8.4,<10",
   "twine>=6.1",
 ]
 
