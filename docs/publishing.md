@@ -31,8 +31,8 @@ Recommended:
 
 ## Release Flow
 
-1. Update the package version in [`pyproject.toml`](../pyproject.toml).
-2. Update [`CHANGELOG.md`](../CHANGELOG.md).
+1. Update [`CHANGELOG.md`](../CHANGELOG.md).
+2. Pick the next release tag, for example `0.1.6`.
 3. Run the local verification steps:
 
 ```bash
@@ -44,6 +44,8 @@ Recommended:
 4. Commit and push the release changes.
 5. Create a Git tag and GitHub release for that version, or run the publish workflow manually.
 6. Approve the `pypi` environment if required.
+
+`pytest-warmup` uses VCS-driven package versions through Git tags. The version is no longer hard-coded in [`pyproject.toml`](../pyproject.toml); the build backend derives it from the checked-out tag. For release builds, make sure the workflow has access to tags.
 
 ## What the Workflow Does
 

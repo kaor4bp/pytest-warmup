@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Switched package versioning to Git tag derived builds through `hatch-vcs`.
 - Removed the fallback producer fixture seam. Producer resolution now uses only the ordinary pytest dependency chain plus explicit `producer_fixture="..."` disambiguation.
 
 ## 0.1.4

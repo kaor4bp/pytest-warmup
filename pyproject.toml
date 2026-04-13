@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling>=1.27"]
+requires = ["hatchling>=1.27", "hatch-vcs>=0.4"]
 build-backend = "hatchling.build"
 
 [project]
 name = "pytest-warmup"
-version = "0.1.4"
+dynamic = ["version"]
 description = "Batch preparation and distribution of expensive test resources for pytest."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -51,6 +51,12 @@ pytest-warmup = "pytest_warmup.pytest_plugin"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pytest_warmup"]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+local_scheme = "no-local-version"
 
 [dependency-groups]
 dev = [
