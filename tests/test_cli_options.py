@@ -575,11 +575,11 @@ def test_cli_save_on_fail_writes_partial_snapshot(
             def value(self, *, label, id=None):
                 return super().require(payload={{"label": label}}, dependencies={{}}, id=id)
 
-            def prepare(self, nodes, runtime):
+            def prepare(self, nodes):
                 for node in nodes:
-                    if node.public_id == "beta":
+                    if node.id == "beta":
                         raise RuntimeError("boom")
-                    runtime.set(node, {{"label": node.payload["label"]}})
+                    node.set_value({{"label": node.payload["label"]}})
 
         demo = DemoPlan("demo")
         alpha = demo.value(label="alpha", id="alpha")

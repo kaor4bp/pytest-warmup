@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from pytest_warmup import WarmupPlan, WarmupRequirement
-from pytest_warmup.core import PlanNode, RuntimeContext
+from pytest_warmup import WarmupNode, WarmupPlan, WarmupRequirement
 
 from .fake_external_api import FakeExternalApi
 
@@ -26,16 +25,12 @@ class FacilityPlan(WarmupPlan):
             is_per_test=is_per_test,
         )
 
-    def prepare(
-        self,
-        nodes: list[PlanNode],
-        runtime: RuntimeContext,
-    ) -> None:
+    def before_prepare(self, nodes: list[WarmupNode]) -> None:
         self.prepare_calls += 1
-        for node in nodes:
-            country = str(node.payload["country"])
-            runtime.set(node, self.api.create_facility(country=country))
-            runtime.trace.append(f"facility_ready:{node.runtime_key}")
+
+    def prepare_node(self, node: WarmupNode) -> object:
+        country = str(node.payload["country"])
+        return self.api.create_facility(country=country)
 
 
 class ProgramPlan(WarmupPlan):
@@ -59,23 +54,16 @@ class ProgramPlan(WarmupPlan):
             is_per_test=is_per_test,
         )
 
-    def prepare(
-        self,
-        nodes: list[PlanNode],
-        runtime: RuntimeContext,
-    ) -> None:
+    def before_prepare(self, nodes: list[WarmupNode]) -> None:
         self.prepare_calls += 1
-        for node in nodes:
-            facility = node.deps["facility"]
-            program_profile = str(node.payload["program_profile"])
-            runtime.set(
-                node,
-                self.api.create_program(
-                facility=facility,
-                program_profile=program_profile,
-                ),
-            )
-            runtime.trace.append(f"program_ready:{node.runtime_key}")
+
+    def prepare_node(self, node: WarmupNode) -> object:
+        facility = node.deps["facility"]
+        program_profile = str(node.payload["program_profile"])
+        return self.api.create_program(
+            facility=facility,
+            program_profile=program_profile,
+        )
 
 
 class InventoryPlan(WarmupPlan):
@@ -100,20 +88,13 @@ class InventoryPlan(WarmupPlan):
             is_per_test=is_per_test,
         )
 
-    def prepare(
-        self,
-        nodes: list[PlanNode],
-        runtime: RuntimeContext,
-    ) -> None:
+    def before_prepare(self, nodes: list[WarmupNode]) -> None:
         self.prepare_calls += 1
-        for node in nodes:
-            program = node.deps["program"]
-            runtime.set(
-                node,
-                self.api.create_products(
-                    program=program,
-                    qty=int(node.payload["qty"]),
-                    upc=str(node.payload["upc"]),
-                ),
-            )
-            runtime.trace.append(f"products_ready:{node.runtime_key}")
+
+    def prepare_node(self, node: WarmupNode) -> object:
+        program = node.deps["program"]
+        return self.api.create_products(
+            program=program,
+            qty=int(node.payload["qty"]),
+            upc=str(node.payload["upc"]),
+        )

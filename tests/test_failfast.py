@@ -119,9 +119,8 @@ def test_same_plan_dependency_cycle_fails_fast(pytester: pytest.Pytester) -> Non
                     dependencies["dep"] = dep
                 return super().require(payload={"kind": "value"}, dependencies=dependencies, id=id)
 
-            def prepare(self, nodes, runtime):
-                for node in nodes:
-                    runtime.set(node, {"id": node.public_id})
+            def prepare_node(self, node):
+                return {"id": node.id}
 
         loop = LoopPlan("loop")
         first = loop.value(id="first")
@@ -163,9 +162,8 @@ def test_cross_plan_dependency_cycle_fails_fast(pytester: pytest.Pytester) -> No
                     dependencies["beta"] = beta
                 return super().require(payload={"kind": "alpha"}, dependencies=dependencies, id=id)
 
-            def prepare(self, nodes, runtime):
-                for node in nodes:
-                    runtime.set(node, {"id": node.public_id})
+            def prepare_node(self, node):
+                return {"id": node.id}
 
         class BetaPlan(WarmupPlan):
             def beta(self, *, alpha=None, id=None):
@@ -174,9 +172,8 @@ def test_cross_plan_dependency_cycle_fails_fast(pytester: pytest.Pytester) -> No
                     dependencies["alpha"] = alpha
                 return super().require(payload={"kind": "beta"}, dependencies=dependencies, id=id)
 
-            def prepare(self, nodes, runtime):
-                for node in nodes:
-                    runtime.set(node, {"id": node.public_id})
+            def prepare_node(self, node):
+                return {"id": node.id}
 
         alpha = AlphaPlan("alpha")
         beta = BetaPlan("beta")

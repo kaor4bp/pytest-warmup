@@ -62,7 +62,20 @@ class WarmupRequirement:
 
 
 class WarmupPlan:
-    """Base class for domain-specific plans that declare and prepare resources."""
+    """Base class for domain-specific plans that declare and prepare resources.
+
+    Subclasses usually override `prepare_node(...)` for simple one-node-at-a-time
+    materialization. The default `prepare(...)` method provides the public
+    lifecycle skeleton:
+
+    1. call `before_prepare(nodes)` once for the current batch;
+    2. call `prepare_node(node)` for each node and store the returned value;
+    3. call `after_prepare(nodes)` once after node preparation.
+
+    Override `prepare(nodes)` directly only when the plan needs custom batch
+    orchestration. In that case, each node must be completed with
+    `node.set_value(...)` or `node.set_exception(...)`.
+    """
 
     def __init__(self, name: str) -> None:
         self.name = name
@@ -113,18 +126,67 @@ class WarmupPlan:
             is_per_test=is_per_test,
         )
 
-    def prepare(
-        self,
-        nodes: list["PlanNode"],
-        runtime: "RuntimeContext",
-    ) -> None:
-        """Materialize a batch of plan-owned nodes into the active runtime.
+    def before_prepare(self, nodes: list["WarmupNode"]) -> None:
+        """Run once before this plan prepares its current batch.
 
-        Subclasses should iterate over `nodes`, call external APIs or domain
-        helpers as needed, and publish results through `runtime.set(...)` or
-        `runtime.set_exception(...)`.
+        `nodes` contains only selected requirements owned by this plan and not
+        already satisfied by snapshot values. If `before_prepare(...)` raises, the default
+        `prepare(...)` records that exception on every node in the batch and
+        skips both `prepare_node(...)` and `after_prepare(...)`.
         """
-        raise NotImplementedError
+        del nodes
+
+    def prepare_node(self, node: "WarmupNode") -> object:
+        """Materialize one node and return the value injected into tests.
+
+        This is the main extension point for ordinary plans. The default
+        `prepare(...)` stores the returned value with `node.set_value(...)`.
+        If this method raises, the exception is recorded only on this node and
+        remaining nodes continue to prepare.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement prepare_node(...) or prepare(...)"
+        )
+
+    def after_prepare(self, nodes: list["WarmupNode"]) -> None:
+        """Run once after this plan has attempted to prepare every node.
+
+        This is prepare-phase finalization, not pytest fixture teardown after
+        tests finish. It is useful for actions such as forcing synchronization
+        or resetting caches after a batch is created. If `after_prepare(...)` raises,
+        the default `prepare(...)` records that exception on nodes that currently
+        have prepared values, while preserving earlier per-node exceptions.
+        """
+        del nodes
+
+    def prepare(self, nodes: list["WarmupNode"]) -> None:
+        """Prepare a batch of plan-owned nodes.
+
+        The default implementation exposes the standard lifecycle skeleton:
+        `before_prepare(nodes)`, `prepare_node(node)` for every node, then
+        `after_prepare(nodes)`. Override this method for custom batch orchestration;
+        overridden implementations are responsible for completing every node via
+        `node.set_value(...)` or `node.set_exception(...)`.
+        """
+        try:
+            self.before_prepare(nodes)
+        except Exception as exc:
+            for node in nodes:
+                node.set_exception(exc)
+            return
+
+        for node in nodes:
+            try:
+                node.set_value(self.prepare_node(node))
+            except Exception as exc:
+                node.set_exception(exc)
+
+        try:
+            self.after_prepare(nodes)
+        except Exception as exc:
+            for node in nodes:
+                if node.has_value:
+                    node.set_exception(exc)
 
     def validate_snapshot_value(
         self,
@@ -188,15 +250,76 @@ class RuntimeInstance:
     dependency_runtime_keys: Mapping[str, str | tuple[str, ...]]
 
 
-@dataclass(frozen=True)
-class PlanNode:
-    runtime_key: str
-    requirement: WarmupRequirement
-    public_id: str | None
-    test_id: str | None
-    per_test: bool
+@dataclass
+class WarmupNode:
+    """One selected resource instance passed to `WarmupPlan` lifecycle hooks.
+
+    `payload` contains plain declaration data from `WarmupPlan.require(...)`.
+    `deps` contains already materialized dependency values. A plan must complete
+    each node by calling `set_value(...)` or `set_exception(...)` when it
+    overrides `WarmupPlan.prepare(...)` directly.
+    """
+
+    _runtime_key: str = field(repr=False)
+    _requirement: WarmupRequirement = field(repr=False)
+    _public_id: str | None = field(repr=False)
+    _test_id: str | None = field(repr=False)
+    _per_test: bool = field(repr=False)
     payload: Mapping[str, object]
     deps: Mapping[str, object | tuple[object, ...]]
+    _runtime: "RuntimeContext | None" = field(default=None, init=False, repr=False)
+
+    @property
+    def id(self) -> str | None:
+        """Public debug id declared by `WarmupPlan.require(id=...)`, if any."""
+        return self._public_id
+
+    @property
+    def test_id(self) -> str | None:
+        """Collected pytest test nodeid for per-test nodes, otherwise `None`."""
+        return self._test_id
+
+    @property
+    def is_per_test(self) -> bool:
+        """Whether this runtime node is materialized separately per test."""
+        return self._per_test
+
+    @property
+    def has_value(self) -> bool:
+        """Whether this node currently has a prepared value."""
+        return self._require_runtime().has_value(self)
+
+    @property
+    def has_exception(self) -> bool:
+        """Whether this node currently has a recorded preparation exception."""
+        return self._require_runtime().has_exception(self)
+
+    @property
+    def is_resolved(self) -> bool:
+        """Whether this node has either a value or an exception."""
+        return self.has_value or self.has_exception
+
+    def set_value(self, value: object) -> None:
+        """Record the value that should be injected for this node."""
+        self._require_runtime().set_value(self, value)
+
+    def set_exception(self, exc: BaseException) -> None:
+        """Record the exception that should be raised when this node is used."""
+        self._require_runtime().set_exception(self, exc)
+
+    def _attach_runtime(self, runtime: "RuntimeContext") -> None:
+        self._runtime = runtime
+
+    def _detach_runtime(self, runtime: "RuntimeContext") -> None:
+        if self._runtime is runtime:
+            self._runtime = None
+
+    def _require_runtime(self) -> "RuntimeContext":
+        if self._runtime is None:
+            raise WarmupError(
+                "warmup node values may only be set during active plan.prepare(...)"
+            )
+        return self._runtime
 
 
 @dataclass
@@ -232,49 +355,72 @@ class RuntimeContext:
     trace: list[str] = field(default_factory=list)
     batch_reports: list[dict[str, object]] = field(default_factory=list)
     _store: ProducedValueStore | None = field(default=None, init=False, repr=False)
-    _active_batch: dict[str, PlanNode] = field(default_factory=dict, init=False, repr=False)
+    _active_batch: dict[str, WarmupNode] = field(default_factory=dict, init=False, repr=False)
 
     def start_batch(
         self,
         *,
-        nodes: list[PlanNode],
+        nodes: list[WarmupNode],
         store: ProducedValueStore,
     ) -> None:
         self._store = store
-        self._active_batch = {node.runtime_key: node for node in nodes}
+        self._active_batch = {node._runtime_key: node for node in nodes}
+        for node in nodes:
+            node._attach_runtime(self)
 
     def finish_batch(self) -> None:
+        for node in self._active_batch.values():
+            node._detach_runtime(self)
         self._active_batch = {}
         self._store = None
 
-    def set(self, node: PlanNode, value: object) -> None:
+    def has_value(self, node: WarmupNode) -> bool:
         store = self._require_active_store()
         self._require_active_node(node)
-        store.values_by_runtime_key[node.runtime_key] = value
-        if node.per_test:
-            store.per_test_by_requirement[(node.requirement, node.test_id or "")] = node.runtime_key
-        else:
-            store.shared_by_requirement[node.requirement] = node.runtime_key
+        return node._runtime_key in store.values_by_runtime_key
 
-    def set_exception(self, node: PlanNode, exc: BaseException) -> None:
+    def has_exception(self, node: WarmupNode) -> bool:
         store = self._require_active_store()
         self._require_active_node(node)
-        store.exceptions_by_runtime_key[node.runtime_key] = exc
-        if node.per_test:
-            store.per_test_by_requirement[(node.requirement, node.test_id or "")] = node.runtime_key
+        return node._runtime_key in store.exceptions_by_runtime_key
+
+    def set_value(self, node: WarmupNode, value: object) -> None:
+        store = self._require_active_store()
+        self._require_active_node(node)
+        store.values_by_runtime_key[node._runtime_key] = value
+        store.exceptions_by_runtime_key.pop(node._runtime_key, None)
+        if node._per_test:
+            store.per_test_by_requirement[
+                (node._requirement, node._test_id or "")
+            ] = node._runtime_key
         else:
-            store.shared_by_requirement[node.requirement] = node.runtime_key
-        self.trace.append(f"exception:{node.runtime_key}:{exc.__class__.__name__}")
+            store.shared_by_requirement[node._requirement] = node._runtime_key
+
+    def set_exception(self, node: WarmupNode, exc: BaseException) -> None:
+        store = self._require_active_store()
+        self._require_active_node(node)
+        store.exceptions_by_runtime_key[node._runtime_key] = exc
+        store.values_by_runtime_key.pop(node._runtime_key, None)
+        if node._per_test:
+            store.per_test_by_requirement[
+                (node._requirement, node._test_id or "")
+            ] = node._runtime_key
+        else:
+            store.shared_by_requirement[node._requirement] = node._runtime_key
+        self.trace.append(f"exception:{node._runtime_key}:{exc.__class__.__name__}")
 
     def _require_active_store(self) -> ProducedValueStore:
         if self._store is None:
-            raise WarmupError("runtime.set(...) may only be used during active plan.prepare(...)")
+            raise WarmupError(
+                "warmup node values may only be set during active plan.prepare(...)"
+            )
         return self._store
 
-    def _require_active_node(self, node: PlanNode) -> None:
-        if node.runtime_key not in self._active_batch:
+    def _require_active_node(self, node: WarmupNode) -> None:
+        if node._runtime_key not in self._active_batch:
             raise WarmupError(
-                f"runtime operation targets unknown node {node.runtime_key!r} outside active batch"
+                "runtime operation targets unknown node "
+                f"{node._runtime_key!r} outside active batch"
             )
 
 
@@ -989,35 +1135,35 @@ def _materialize(
             pending.append(instance)
 
         if pending:
-            plan_nodes = _plan_nodes_for_instances(pending, store)
+            plan_nodes = _warmup_nodes_for_instances(pending, store)
             runtime.start_batch(nodes=plan_nodes, store=store)
             started_at = perf_counter()
             try:
-                plan.prepare(plan_nodes, runtime)
+                plan.prepare(plan_nodes)
             finally:
                 runtime.finish_batch()
             runtime.batch_reports.append(
                 {
                     "plan": plan.name,
                     "node_count": len(plan_nodes),
-                    "runtime_keys": [node.runtime_key for node in plan_nodes],
+                    "runtime_keys": [node._runtime_key for node in plan_nodes],
                     "duration_ms": round((perf_counter() - started_at) * 1000, 3),
                 }
             )
             _validate_batch_completion(plan_nodes, store)
 
 
-def _plan_nodes_for_instances(
+def _warmup_nodes_for_instances(
     instances: list[RuntimeInstance],
     store: ProducedValueStore,
-) -> list[PlanNode]:
+) -> list[WarmupNode]:
     return [
-        PlanNode(
-            runtime_key=instance.runtime_key,
-            requirement=instance.node.requirement,
-            public_id=instance.node.public_id,
-            test_id=instance.test_id,
-            per_test=instance.per_test,
+        WarmupNode(
+            _runtime_key=instance.runtime_key,
+            _requirement=instance.node.requirement,
+            _public_id=instance.node.public_id,
+            _test_id=instance.test_id,
+            _per_test=instance.per_test,
             payload=instance.node.requirement.payload,
             deps=_resolve_dependency_values(instance=instance, store=store),
         )
@@ -1026,17 +1172,18 @@ def _plan_nodes_for_instances(
 
 
 def _validate_batch_completion(
-    nodes: list[PlanNode],
+    nodes: list[WarmupNode],
     store: ProducedValueStore,
 ) -> None:
     __tracebackhide__ = True
     for node in nodes:
-        if node.runtime_key in store.values_by_runtime_key:
+        if node._runtime_key in store.values_by_runtime_key:
             continue
-        if node.runtime_key in store.exceptions_by_runtime_key:
+        if node._runtime_key in store.exceptions_by_runtime_key:
             continue
         raise WarmupError(
-            f"plan {node.requirement.owner_plan.name!r} did not set a value or exception for node {node.runtime_key!r}"
+            f"plan {node._requirement.owner_plan.name!r} did not set a value "
+            f"or exception for node {node._runtime_key!r}"
         )
 
 

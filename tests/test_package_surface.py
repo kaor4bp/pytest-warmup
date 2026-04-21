@@ -5,6 +5,7 @@ import pytest_warmup
 
 def test_public_surface_stays_narrow() -> None:
     assert hasattr(pytest_warmup, "__version__")
+    assert hasattr(pytest_warmup, "WarmupNode")
     assert hasattr(pytest_warmup, "WarmupPlan")
     assert hasattr(pytest_warmup, "WarmupRequirement")
     assert hasattr(pytest_warmup, "WarmupError")

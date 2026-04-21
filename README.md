@@ -24,6 +24,7 @@ pip install pytest-warmup
 This package is intentionally narrow:
 
 - `WarmupPlan`
+- `WarmupNode`
 - `WarmupRequirement`
 - `WarmupError`
 - `@warmup_param(...)`
@@ -34,7 +35,7 @@ This package is intentionally narrow:
 Declare resource requirements in plan classes:
 
 ```python
-from pytest_warmup import WarmupPlan, WarmupRequirement
+from pytest_warmup import WarmupNode, WarmupPlan, WarmupRequirement
 
 
 class ProfilePlan(WarmupPlan):
@@ -52,15 +53,11 @@ class ProfilePlan(WarmupPlan):
             is_per_test=is_per_test,
         )
 
-    def prepare(self, nodes, runtime) -> None:
-        for node in nodes:
-            runtime.set(
-                node,
-                {
-                    "profile_id": f"profile-{node.payload['profile_name']}",
-                    "profile_name": node.payload["profile_name"],
-                },
-            )
+    def prepare_node(self, node: WarmupNode) -> dict[str, object]:
+        return {
+            "profile_id": f"profile-{node.payload['profile_name']}",
+            "profile_name": node.payload["profile_name"],
+        }
 ```
 
 Build requirements from those plans:
@@ -103,6 +100,43 @@ def test_profile(prepare_data, prepared_program, prepared_products):
 ```
 
 `is_per_test=True` on a requirement means that requirement is materialized separately for each collected test item. If omitted, the requirement inherits per-test behavior from upstream dependencies, otherwise it stays shared within the producer scope.
+
+## Plan Lifecycle
+
+For ordinary plans, implement `prepare_node(...)` and return the prepared value:
+
+```python
+class ProgramPlan(WarmupPlan):
+    def prepare_node(self, node: WarmupNode) -> Program:
+        facility = node.deps["facility"]
+        return create_program(facility=facility, name=node.payload["name"])
+```
+
+`WarmupPlan.prepare(...)` provides the default lifecycle:
+
+1. `before_prepare(nodes)` runs once before the batch; if it raises, every node in the batch receives that exception.
+2. `prepare_node(node)` runs for each node; if it raises, only that node receives the exception.
+3. `after_prepare(nodes)` runs once after node preparation; if it raises, nodes that currently have prepared values receive that exception.
+
+`after_prepare(...)` is prepare-phase finalization, not pytest fixture teardown after tests finish. Use it for actions such as forcing synchronization or resetting caches before tests consume prepared values.
+
+Override `prepare(nodes)` directly when the plan needs custom batch orchestration. In that mode, complete every node explicitly:
+
+```python
+class OrderPlan(WarmupPlan):
+    def prepare(self, nodes: list[WarmupNode]) -> None:
+        for node in nodes:
+            try:
+                value = create_order(inventory=node.deps["inventory"])
+                node.set_value(value)
+            except Exception as exc:
+                node.set_exception(exc)
+```
+
+Migration note: older prototypes used `prepare(nodes, runtime)` and
+`runtime.set(...)`. The public extension API is now `prepare_node(node)` for
+ordinary plans, or `prepare(nodes)` with `node.set_value(...)` /
+`node.set_exception(...)` for custom batch plans.
 
 For full runnable examples, see:
 

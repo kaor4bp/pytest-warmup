@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from pytest_warmup import WarmupPlan, WarmupRequirement, warmup_param
+from pytest_warmup import WarmupNode, WarmupPlan, WarmupRequirement, warmup_param
 
 
 class WorkspacePlan(WarmupPlan):
@@ -20,15 +20,11 @@ class WorkspacePlan(WarmupPlan):
             is_per_test=is_per_test,
         )
 
-    def prepare(self, nodes, runtime) -> None:
-        for node in nodes:
-            runtime.set(
-                node,
-                {
-                    "workspace_id": f"workspace-{node.payload['region']}",
-                    "region": node.payload["region"],
-                },
-            )
+    def prepare_node(self, node: WarmupNode) -> dict[str, object]:
+        return {
+            "workspace_id": f"workspace-{node.payload['region']}",
+            "region": node.payload["region"],
+        }
 
 
 class ProfilePlan(WarmupPlan):
@@ -47,17 +43,13 @@ class ProfilePlan(WarmupPlan):
             is_per_test=is_per_test,
         )
 
-    def prepare(self, nodes, runtime) -> None:
-        for node in nodes:
-            workspace = node.deps["workspace"]
-            runtime.set(
-                node,
-                {
-                    "profile_id": f"profile-{node.payload['profile_name']}",
-                    "workspace_id": workspace["workspace_id"],
-                    "profile_name": node.payload["profile_name"],
-                },
-            )
+    def prepare_node(self, node: WarmupNode) -> dict[str, object]:
+        workspace = node.deps["workspace"]
+        return {
+            "profile_id": f"profile-{node.payload['profile_name']}",
+            "workspace_id": workspace["workspace_id"],
+            "profile_name": node.payload["profile_name"],
+        }
 
 
 class ItemsPlan(WarmupPlan):
@@ -77,18 +69,14 @@ class ItemsPlan(WarmupPlan):
             is_per_test=is_per_test,
         )
 
-    def prepare(self, nodes, runtime) -> None:
-        for node in nodes:
-            profile = node.deps["profile"]
-            runtime.set(
-                node,
-                {
-                    "items_id": f"items-{node.payload['reference']}",
-                    "profile_id": profile["profile_id"],
-                    "count": node.payload["count"],
-                    "reference": node.payload["reference"],
-                },
-            )
+    def prepare_node(self, node: WarmupNode) -> dict[str, object]:
+        profile = node.deps["profile"]
+        return {
+            "items_id": f"items-{node.payload['reference']}",
+            "profile_id": profile["profile_id"],
+            "count": node.payload["count"],
+            "reference": node.payload["reference"],
+        }
 
 
 workspace = WorkspacePlan("workspace")
